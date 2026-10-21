@@ -14,23 +14,26 @@ git clone https://github.com/inoutvillage/ai-digest-skill.git
 cd ai-digest-skill
 ```
 
-- Mac・Linux・WSL: このフォルダで `bash install.sh` を実行する。Claude Code と Codex の入っている方（両方なら両方）に写します。片方だけなら `--claude` か `--codex` を付けます
-- Windows（PowerShell）: このフォルダで、使う方の 2 行を実行します。1 行目で入れる先の `skills` フォルダを作り（無い時に `Copy-Item` が違う場所へ写すのを防ぐ）、2 行目で写します
+入れる道具を実行します。
 
-  ```powershell
-  # Claude Code
-  New-Item -ItemType Directory -Force "$HOME\.claude\skills" | Out-Null
-  Copy-Item -Recurse -Force .\skills\ai-digest-post "$HOME\.claude\skills\"
-  # Codex
-  New-Item -ItemType Directory -Force "$HOME\.codex\skills" | Out-Null
-  Copy-Item -Recurse -Force .\skills\ai-digest-post "$HOME\.codex\skills\"
-  ```
+- Mac・Linux・WSL: `bash install.sh`
+- Windows（PowerShell）: `powershell -ExecutionPolicy Bypass -File .\install.ps1`
 
-  入れ直す時は、先に前の版を消してから同じ 2 行を実行します（消さずに写すと、新しい版で無くなったファイルが残ります）: `Remove-Item -Recurse -Force "$HOME\.claude\skills\ai-digest-post"`（Codex は `.codex`）
+入れる道具がすること:
+
+1. Node.js 22 以上があるかを見ます。無ければ入れ方を案内します。スキルは入れておくので、Node.js を入れた後はそのまま使えます
+2. スキルを、Claude Code と Codex の入っている方（両方なら両方）に写します。前の版は `.bak` に残します。片方だけに入れる時は `--claude` か `--codex`（Windows は `-Claude` か `-Codex`）を付けます
+3. 連携するスキル（imozuru と yomiyasu。下の「連携するスキル」）が入っていなければ、入れるかを 1 つずつ聞きます（y/N）。入れなくても記事は書けます。後から入れた時も、スキルが記事を書くたびに見つけて使います。すでに入っている物には手を付けません
+
+### AI に頼んで入れる時
+
+AI が入れる道具を動かすと、質問に答えられません。その時は連携するスキルを入れずに進みます。入れたい時は、先に AI に伝えて `--with-extras`（両方）・`--with-imozuru`・`--with-yomiyasu` を付けてもらいます（Windows は `-WithExtras`・`-WithImozuru`・`-WithYomiyasu`）。聞かずに入れない時は `--no-extras`（`-NoExtras`）です。
+
+入れる道具の終わりの値: 0 は済んだ、3 はスキルを入れたが Node.js が要る、4 はスキルを入れたが連携するスキルを取れなかった。
 
 入れたら Claude Code・Codex を開き直します。「ai-digest の記事を書いて」と頼むと使われます（Codex は `$ai-digest-post` と書いても呼べます）。
 
-更新する時は、このフォルダで `git pull` してから、入れた時と同じ手順をもう一度実行します（`install.sh` は前の版を `.bak` に残して入れ替えます）。
+更新する時は、このフォルダで `git pull` してから、入れる道具をもう一度実行します（前の版は `.bak` に残して入れ替えます）。
 
 ## 2. 鍵とサイトの URL を登録する（初めての時に 1 回）
 
@@ -49,11 +52,20 @@ cd ai-digest-skill
 | 物 | 要るか | 無い時 |
 |---|---|---|
 | Node.js 22 以上 | 要る（送る道具と確かめに使う） | 入れる |
-| imozuru（原文を落として読む道具を持つスキル。https://github.com/MaryCache/imozuru ・MIT） | 任意 | 裏付けの確かめで、出典を自分で開いて確かめる |
-| yomiyasu（AI っぽい日本語を読みやすく整えるスキル） | 任意 | スキルが「自分で整える時の決まり」で整える |
+| imozuru（原文を落として読む道具を持つスキル。https://github.com/MaryCache/imozuru ・MIT。道具は Python 3.10 以上） | 任意。入れる道具で入れられる | 裏付けの確かめで、出典を自分で開いて確かめる |
+| yomiyasu（AI っぽい日本語を読みやすく整えるスキル。https://github.com/nanaism/yomiyasu ・MIT） | 任意。入れる道具で入れられる | スキルが「自分で整える時の決まり」で整える |
 | 絵を作る道具 | 任意 | Codex なら内蔵の画像生成で作れる。Claude Code だけなら絵なしで送るか、権利のある写真を使う |
 
 どれを使ったか、どれが無くて代わりの手順にしたかは、スキルが最後の報告に書きます。
+
+## 連携するスキル
+
+このスキルは、入っていれば次の 2 つのスキルを使います。どちらも作者の方々が公開している OSS（MIT）で、このリポジトリには含めていません。入れる道具で「入れる」を選ぶと、確かめた版をそれぞれの公開元から取ってきて入れます。
+
+| スキル | 公開元 | このスキルでの使い方 | 入れる版 |
+|---|---|---|---|
+| imozuru | https://github.com/MaryCache/imozuru | 裏付けの確かめで、出典を落として読む（PDF や動画の字幕も） | ecb82c7 |
+| yomiyasu | https://github.com/nanaism/yomiyasu | 書いた本文を、読みやすい日本語に整える | fbe02c9（v2.1.1） |
 
 ## 4. 記事の形と決まり
 

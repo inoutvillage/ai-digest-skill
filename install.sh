@@ -1,28 +1,66 @@
 #!/usr/bin/env bash
-# ai-digest の投稿スキル（ai-digest-post）を入れる。Mac・Linux・WSL 用（Windows は README の手順）。
-#   bash install.sh            … 入っている方（Claude Code の ~/.claude と Codex の ~/.codex。両方なら両方）に写す
-#   bash install.sh --claude   … Claude Code だけ
-#   bash install.sh --codex    … Codex だけ
-# 前に入れた版は ai-digest-post.bak に残す（その前の .bak は消える）。
+# ai-digest の投稿スキル（ai-digest-post）を入れる。Mac・Linux・WSL 用（Windows は install.ps1）。
+#   bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras]
+# 1. Node.js 22 以上があるかを見る。無ければ入れ方を案内する（スキルは入れる）
+# 2. スキルを、入っている方（Claude Code の ~/.claude と Codex の ~/.codex。両方なら両方）に写す。前の版は ai-digest-post.bak に残す
+# 3. 連携するスキル imozuru と yomiyasu が無ければ、入れるかを聞く（y/N）。入れる時は、確かめた版を GitHub から取って入れる。
+#    すでに入っている物には手を付けない。入れなくても記事は書ける。後から入れれば、スキルが記事を書くたびに見つけて使う。
+#    聞けない時（端末でない・AI が実行した時）は入れない。--with-imozuru・--with-yomiyasu・--with-extras（両方）で入れる。--no-extras で聞かない
+# 終わりの値: 0 済んだ／1 入れる先が無い／2 使い方の誤り／3 スキルは入れたが Node.js が要る／4 スキルは入れたが連携するスキルを入れられなかった
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 src="$here/skills/ai-digest-post"
 codex_home="${CODEX_HOME:-$HOME/.codex}"
+node_bin="${AI_DIGEST_NODE_BIN:-node}"            # 試し用に差し替えられる
+extras_source="${AI_DIGEST_EXTRAS_SOURCE:-}"      # 試し用: <フォルダ>/<名前>/SKILL.md を GitHub の代わりに使う
+assume_tty="${AI_DIGEST_INSTALL_ASSUME_TTY:-}"    # 試し用: 端末でなくても聞く（答えは標準入力から）
+
+# 連携するスキル（入れる版は、確かめた commit に固定する）
+IMOZURU_REPO="MaryCache/imozuru";  IMOZURU_REF="ecb82c71b611872a0f49e783eda3bec987c80d91"
+YOMIYASU_REPO="nanaism/yomiyasu";  YOMIYASU_REF="fbe02c93877d697cc53d9377b7a45dd8a1dd99b3"
+
+usage() { echo "使い方: bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras]" >&2; }
+
 targets=()
-case "${1:-}" in
-  --claude) targets=("$HOME/.claude/skills") ;;
-  --codex) targets=("$codex_home/skills") ;;
-  "")
-    [ -d "$HOME/.claude" ] && targets+=("$HOME/.claude/skills")
-    [ -d "$codex_home" ] && targets+=("$codex_home/skills")
-    ;;
-  *) echo "使い方: bash install.sh [--claude|--codex]" >&2; exit 2 ;;
-esac
+want_imozuru=""
+want_yomiyasu=""
+for a in "$@"; do
+  case "$a" in
+    --claude) targets+=("$HOME/.claude/skills") ;;
+    --codex) targets+=("$codex_home/skills") ;;
+    --with-imozuru) want_imozuru=y ;;
+    --with-yomiyasu) want_yomiyasu=y ;;
+    --with-extras) want_imozuru=y; want_yomiyasu=y ;;
+    --no-extras) [ -n "$want_imozuru" ] || want_imozuru=n; [ -n "$want_yomiyasu" ] || want_yomiyasu=n ;;
+    *) usage; exit 2 ;;
+  esac
+done
+if [ "${#targets[@]}" -eq 0 ]; then
+  [ -d "$HOME/.claude" ] && targets+=("$HOME/.claude/skills")
+  [ -d "$codex_home" ] && targets+=("$codex_home/skills")
+fi
 [ -f "$src/SKILL.md" ] || { echo "スキルが見つからない: $src" >&2; exit 1; }
 if [ "${#targets[@]}" -eq 0 ]; then
   echo "Claude Code（~/.claude）も Codex（$codex_home）も見つからない。--claude か --codex を付けて実行する" >&2
   exit 1
 fi
+
+# 1. Node.js
+node_ok=1
+v="$("$node_bin" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+if [ -n "$v" ] && [ "$v" -ge 22 ] 2>/dev/null; then
+  echo "Node.js: v$("$node_bin" -p 'process.versions.node')（使える）"
+else
+  node_ok=0
+  echo "注意: Node.js 22 以上が見つからない（今: ${v:+v$v 系}${v:-入っていない}）。送る道具と送る前の確かめに要る"
+  case "$(uname -s)" in
+    Darwin) echo "  入れ方（Mac）: https://nodejs.org/ja/download から入れる。Homebrew があれば brew install node" ;;
+    *) echo "  入れ方（Linux・WSL）: https://nodejs.org/ja/download の手順か、nvm（https://github.com/nvm-sh/nvm）で nvm install 22" ;;
+  esac
+  echo "  スキルは入れておく。Node.js を入れた後は、入れ直さずにそのまま使える"
+fi
+
+# 2. スキル
 for t in "${targets[@]}"; do
   mkdir -p "$t"
   dest="$t/ai-digest-post"
@@ -35,5 +73,73 @@ for t in "${targets[@]}"; do
   mv "$dest.new" "$dest"
   echo "入れた: $dest"
 done
+
+# 3. 連携するスキル（取ってきた物は一時フォルダに置き、終わる時に消す）
+extras_failed=0
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+installed_everywhere() { local t; for t in "${targets[@]}"; do [ -f "$t/$1/SKILL.md" ] || return 1; done; return 0; }
+can_ask() { [ -n "$assume_tty" ] || [ -t 0 ]; }
+fetch_extra() { # $1 名前 $2 リポジトリ $3 版 → 取ったスキルのフォルダを標準出力に（失敗は 1）
+  local name="$1" repo="$2" ref="$3" tmp
+  if [ -n "$extras_source" ]; then
+    [ -f "$extras_source/$name/SKILL.md" ] || return 1
+    echo "$extras_source/$name"
+    return 0
+  fi
+  command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 || { echo "  curl と tar が要る" >&2; return 1; }
+  tmp="$work/$name"
+  mkdir -p "$tmp"
+  curl -fsSL "https://codeload.github.com/$repo/tar.gz/$ref" | tar -xz -C "$tmp" 2>/dev/null || return 1
+  [ -f "$tmp/${repo#*/}-$ref/skills/$name/SKILL.md" ] || return 1
+  echo "$tmp/${repo#*/}-$ref/skills/$name"
+}
+extra() { # $1 名前 $2 リポジトリ $3 版 $4 入れるか（y・n・空＝聞く）$5 説明
+  local name="$1" repo="$2" ref="$3" want="$4" what="$5" ans dir t
+  if installed_everywhere "$name"; then
+    echo "$name: すでに入っている。記事を書く時に使われる"
+    return 0
+  fi
+  if [ -z "$want" ]; then
+    if can_ask; then
+      printf '%s（%s・https://github.com/%s・MIT）も入れますか？ 無くても記事は書けます [y/N] ' "$name" "$what" "$repo"
+      read -r ans || ans=""
+      case "$ans" in y|Y|yes|YES|Yes|はい) want=y ;; *) want=n ;; esac
+    else
+      echo "$name: 聞けないので入れない（端末でない）。入れる時は --with-$name を付けて実行し直す。無くても記事は書ける"
+      return 0
+    fi
+  fi
+  if [ "$want" != y ]; then
+    echo "$name: 入れない。無くても記事は書ける。後から入れれば、記事を書くたびにスキルが見つけて使う"
+    return 0
+  fi
+  if ! dir="$(fetch_extra "$name" "$repo" "$ref")"; then
+    echo "$name: 取れなかった（https://github.com/$repo ・版 ${ref:0:7}）。ネットにつながるかを見て、もう一度実行する" >&2
+    extras_failed=1
+    return 0
+  fi
+  for t in "${targets[@]}"; do
+    if [ -f "$t/$name/SKILL.md" ]; then
+      echo "$name: すでに入っている（そのまま使う）: $t/$name"
+      continue
+    fi
+    if [ -e "$t/$name" ] || [ -L "$t/$name" ]; then # 壊れた物（SKILL.md が無い）は .bak に残して入れ直す
+      rm -rf "$t/$name.bak"
+      mv "$t/$name" "$t/$name.bak"
+    fi
+    cp -R "$dir" "$t/$name"
+    echo "入れた: $t/$name（$repo の版 ${ref:0:7}）"
+  done
+  if [ "$name" = imozuru ] && ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    echo "注意: imozuru の道具は Python 3.10 以上が要る。無いと出典を落とす道具だけ動かず、スキルは出典を自分で開いて確かめる"
+  fi
+}
+extra imozuru "$IMOZURU_REPO" "$IMOZURU_REF" "$want_imozuru" "出典を落として読む道具を持つスキル"
+extra yomiyasu "$YOMIYASU_REPO" "$YOMIYASU_REF" "$want_yomiyasu" "AI っぽい日本語を読みやすく整えるスキル"
+
 echo "次は鍵とサイトの URL の登録: references/setup.md（入れた先のフォルダの中）"
 echo "確かめ: node \"${targets[0]}/ai-digest-post/scripts/post.mjs\" --check"
+[ "$node_ok" = 1 ] || exit 3
+[ "$extras_failed" = 0 ] || exit 4
+exit 0

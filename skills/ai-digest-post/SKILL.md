@@ -65,7 +65,7 @@ node "$SKILL/scripts/post.mjs" --check
 - 結果は 3 つに分ける。確かめられた／出典と食い違う（数字や名前が違う・版が新しくなって変わった）／確かめられない（出典が開けない・書いていない・出典なし）
 - 食い違った主張は、出典に合わせて直す
 - 確かめられない主張は、**その 1 つだけを狭く探す**（作った側の発表・文書・リポジトリを、検索 1〜2 回で）。それでも無ければ、本文に書かないか、4 段目に「確かめられていない」と書く
-- **imozuru がある時**は、出典を imozuru の `scripts/fetch.py` で落としてから確かめる（PDF の文字や YouTube の字幕も読める）。落とす先は `~/research/ai-digest-<slug>/sources/`。imozuru の調べ物（何周もの検索）はしない
+- **imozuru がある時**は、出典を imozuru の `scripts/fetch.py` で落としてから確かめる（PDF の文字や YouTube の字幕も読める）。落とす先は `~/research/ai-digest-<slug>/sources/`。imozuru の調べ物（何周もの検索）はしない。`fetch.py` が動かない時（Python 3.10 未満など）は、自分で開いて確かめる
 - **無い時**は、出典を自分で開いて確かめる。手順は `references/writing.md` の「裏付けの確かめ方」
 - 確かさ（`confidence`）は、確かめられた出典の種類で決める（writing.md の表）
 - 検索語に、人の名前や内部の事情を入れない（検索語は外に出る）

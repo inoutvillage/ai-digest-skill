@@ -219,27 +219,129 @@ test('送る道具: https でない URL は断る（手元の 127.0.0.1 だけ�
   }
 });
 
-test('入れる道具: Claude Code と Codex の入っている方に写す。入れ直すと前の版は .bak に残る', async () => {
+// 入れる道具（install.sh）を一時的なホームで動かす。連携するスキルは GitHub の代わりに手元の見本から取る（ネットにつながない）
+function installer({ home, args = [], env = {}, input = '' }) {
+  return new Promise((resolve) => {
+    const e = { ...process.env, HOME: home, ...env };
+    delete e.CODEX_HOME;
+    const child = execFile('bash', [join(REPO, 'install.sh'), ...args], { env: e }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, out: stdout + stderr }));
+    child.stdin.end(input);
+  });
+}
+
+function installSetup({ claude = true, codex = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'aid-install-'));
-  const sh = (args = []) =>
-    new Promise((resolve) => {
-      const env = { ...process.env, HOME: home };
-      delete env.CODEX_HOME;
-      execFile('bash', [join(REPO, 'install.sh'), ...args], { env }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, out: stdout + stderr }));
-    });
+  if (claude) mkdirSync(join(home, '.claude'));
+  if (codex) mkdirSync(join(home, '.codex'));
+  const extras = join(home, 'extras-source'); // 連携するスキルの見本
+  for (const name of ['imozuru', 'yomiyasu']) {
+    mkdirSync(join(extras, name, 'scripts'), { recursive: true });
+    writeFileSync(join(extras, name, 'SKILL.md'), `---\nname: ${name}\n---\n見本\n`);
+  }
+  return { home, extras, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+}
+
+test('入れる道具: Claude Code と Codex の入っている方に写す。入れ直すと前の版は .bak に残る。使い方の誤りは 2', async () => {
+  const t = installSetup({ claude: false, codex: false });
   try {
-    assert.equal((await sh()).code, 1); // どちらも無い
-    mkdirSync(join(home, '.claude'));
-    mkdirSync(join(home, '.codex'));
-    const r = await sh();
+    assert.equal((await installer({ home: t.home })).code, 1); // どちらも無い
+    mkdirSync(join(t.home, '.claude'));
+    mkdirSync(join(t.home, '.codex'));
+    const r = await installer({ home: t.home, args: ['--no-extras'] });
     assert.equal(r.code, 0, r.out);
-    for (const d of ['.claude/skills', '.codex/skills']) assert.ok(existsSync(join(home, d, 'ai-digest-post/SKILL.md')), d);
-    assert.equal((await sh(['--codex'])).code, 0);
-    assert.ok(existsSync(join(home, '.codex/skills/ai-digest-post.bak/SKILL.md')));
-    assert.ok(!existsSync(join(home, '.claude/skills/ai-digest-post.bak')));
-    assert.equal((await sh(['--both'])).code, 2);
+    for (const d of ['.claude/skills', '.codex/skills']) assert.ok(existsSync(join(t.home, d, 'ai-digest-post/SKILL.md')), d);
+    assert.equal((await installer({ home: t.home, args: ['--codex', '--no-extras'] })).code, 0);
+    assert.ok(existsSync(join(t.home, '.codex/skills/ai-digest-post.bak/SKILL.md')));
+    assert.ok(!existsSync(join(t.home, '.claude/skills/ai-digest-post.bak')));
+    assert.equal((await installer({ home: t.home, args: ['--both'] })).code, 2);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    t.cleanup();
+  }
+});
+
+test('入れる道具: Node.js 22 以上が無ければ入れ方を案内し、スキルは入れて 3 で終わる', async () => {
+  const t = installSetup();
+  try {
+    const r = await installer({ home: t.home, args: ['--no-extras'], env: { AI_DIGEST_NODE_BIN: join(t.home, 'no-such-node') } });
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /Node\.js 22 以上が見つからない（今: 入っていない）/);
+    assert.match(r.out, /入れ方（(Linux・WSL|Mac)）: https:\/\/nodejs\.org/);
+    assert.match(r.out, /入れ直さずにそのまま使える/);
+    assert.ok(existsSync(join(t.home, '.claude/skills/ai-digest-post/SKILL.md')));
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('入れる道具: 聞けない時（AI が実行した時）は連携するスキルを入れず、付ける指定を案内する', async () => {
+  const t = installSetup();
+  try {
+    const r = await installer({ home: t.home, env: { AI_DIGEST_EXTRAS_SOURCE: t.extras } });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /imozuru: 聞けないので入れない（端末でない）。入れる時は --with-imozuru/);
+    assert.match(r.out, /yomiyasu: 聞けないので入れない（端末でない）。入れる時は --with-yomiyasu/);
+    assert.ok(!existsSync(join(t.home, '.claude/skills/imozuru')));
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('入れる道具: --with-extras で両方を両方の道具に入れる。2 回目は「すでに入っている」で触らない', async () => {
+  const t = installSetup();
+  try {
+    const r = await installer({ home: t.home, args: ['--with-extras'], env: { AI_DIGEST_EXTRAS_SOURCE: t.extras } });
+    assert.equal(r.code, 0, r.out);
+    for (const d of ['.claude/skills', '.codex/skills']) for (const n of ['imozuru', 'yomiyasu']) assert.ok(existsSync(join(t.home, d, n, 'SKILL.md')), `${d}/${n}`);
+    const r2 = await installer({ home: t.home, args: ['--with-extras'], env: { AI_DIGEST_EXTRAS_SOURCE: t.extras } });
+    assert.match(r2.out, /imozuru: すでに入っている。記事を書く時に使われる/);
+    assert.ok(!existsSync(join(t.home, '.claude/skills/imozuru.bak')));
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('入れる道具: 聞いた時の答え（y・n）どおりに入れる。答えが空なら入れない', async () => {
+  const t = installSetup();
+  try {
+    const r = await installer({ home: t.home, env: { AI_DIGEST_EXTRAS_SOURCE: t.extras, AI_DIGEST_INSTALL_ASSUME_TTY: '1' }, input: 'y\n\n' });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /imozuru（.*）も入れますか？ 無くても記事は書けます \[y\/N\]/);
+    assert.ok(existsSync(join(t.home, '.claude/skills/imozuru/SKILL.md')));
+    assert.match(r.out, /yomiyasu: 入れない。無くても記事は書ける。後から入れれば、記事を書くたびにスキルが見つけて使う/);
+    assert.ok(!existsSync(join(t.home, '.claude/skills/yomiyasu')));
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('入れる道具: 利用者がすでに入れている連携するスキルは書き換えない。壊れた物（SKILL.md が無い）は .bak に残して入れ直す', async () => {
+  const t = installSetup();
+  try {
+    mkdirSync(join(t.home, '.claude/skills/imozuru'), { recursive: true });
+    writeFileSync(join(t.home, '.claude/skills/imozuru/SKILL.md'), '自分で入れた版\n');
+    mkdirSync(join(t.home, '.codex/skills/imozuru'), { recursive: true }); // 壊れた物
+    const r = await installer({ home: t.home, args: ['--with-imozuru', '--no-extras'], env: { AI_DIGEST_EXTRAS_SOURCE: t.extras } });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(readFileSync(join(t.home, '.claude/skills/imozuru/SKILL.md'), 'utf-8'), '自分で入れた版\n');
+    assert.match(readFileSync(join(t.home, '.codex/skills/imozuru/SKILL.md'), 'utf-8'), /見本/);
+    assert.ok(existsSync(join(t.home, '.codex/skills/imozuru.bak')));
+    assert.match(r.out, /yomiyasu: 入れない/); // --no-extras は、指定の無い方だけを「入れない」にする
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('入れる道具: 連携するスキルを取れなかった時は 4 で終わる（スキルは入っている）', async () => {
+  const t = installSetup();
+  try {
+    rmSync(join(t.extras, 'yomiyasu'), { recursive: true });
+    const r = await installer({ home: t.home, args: ['--with-extras'], env: { AI_DIGEST_EXTRAS_SOURCE: t.extras } });
+    assert.equal(r.code, 4, r.out);
+    assert.match(r.out, /yomiyasu: 取れなかった（https:\/\/github\.com\/nanaism\/yomiyasu ・版 [0-9a-f]{7}）/);
+    assert.ok(existsSync(join(t.home, '.claude/skills/ai-digest-post/SKILL.md')));
+    assert.ok(existsSync(join(t.home, '.claude/skills/imozuru/SKILL.md')));
+  } finally {
+    t.cleanup();
   }
 });
 
