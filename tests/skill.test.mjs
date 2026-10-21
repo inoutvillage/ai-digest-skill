@@ -113,7 +113,7 @@ test('鍵と URL の探し方: 引数 → 環境変数 → ~/.config/ai-digest �
 });
 
 // 偽のサイト（鍵を照合し、届いた物を覚える）
-async function fakeSite({ name = 'tanaka' } = {}) {
+async function fakeSite({ name = 'tanaka', role = 'writer' } = {}) {
   const got = [];
   const server = createServer((req, res) => {
     let body = '';
@@ -122,7 +122,7 @@ async function fakeSite({ name = 'tanaka' } = {}) {
       got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
       res.setHeader('content-type', 'application/json');
       if (req.headers.authorization !== `Bearer ${KEY}`) return res.writeHead(401).end(JSON.stringify({ ok: false, errors: ['鍵が違う'] }));
-      if (req.method === 'GET' && req.url === '/api/articles') return res.end(JSON.stringify({ ok: true, me: { name, role: 'writer' }, articles: [{}, {}] }));
+      if (req.method === 'GET' && req.url === '/api/articles') return res.end(JSON.stringify({ ok: true, me: { name, role }, articles: [{}, {}] }));
       if (req.method === 'POST' && req.url === '/api/articles') return res.writeHead(201).end(JSON.stringify({ ok: true, slug: 'sample-article', status: 'draft' }));
       if (req.method === 'POST' && req.url === '/api/articles/publish') return res.writeHead(403).end(JSON.stringify({ ok: false, errors: ['公開できない'] }));
       res.writeHead(404).end('{}');
@@ -1230,5 +1230,22 @@ test('送る道具: --check は aid_ を含む鍵の名前と投稿者名（said
   } finally {
     await site.close();
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('送る道具: --check は、短い名前（a）でも、サイトの返事に混ざった鍵を伏せる（名前の文字で伏せ方が変わらない）', async () => {
+  const other = `aid_${'f'.repeat(48)}`;
+  for (const role of [KEY, other]) {
+    const site = await fakeSite({ name: 'a', role });
+    const home = homeWith({ url: site.url, key: KEY, name: 'a' });
+    try {
+      const r = await run(join(SKILL, 'scripts/post.mjs'), ['--check'], home);
+      assert.doesNotMatch(r.out, /a{48}|f{48}/, r.out);
+      assert.match(r.out, /鍵は有効です: a（\?・）/); // 知らない役は出さない
+      assert.match(r.out, /投稿者名: a（記事の下に「投稿者：a」と表示される/);
+    } finally {
+      await site.close();
+      rmSync(home, { recursive: true, force: true });
+    }
   }
 });
