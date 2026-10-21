@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # ai-digest の投稿スキル（ai-digest-post）を入れる。Mac・Linux・WSL 用（Windows は install.ps1）。
-#   bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras]
+#   bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras] [--author-name <投稿者名>]
 # 1. Node.js 22 以上があるかを見る。無ければ入れ方を案内する（スキルは入れる）
 # 2. スキルを、入っている方（Claude Code の ~/.claude と Codex の ~/.codex。両方なら両方）に写す。
 #    前の版は ~/.ai-digest-skill/backup/<claude か codex>/ に残す（スキルの置き場の外。置き場の中に残すと古い版も読み込まれる）
 # 3. 連携するスキル imozuru と yomiyasu が無ければ、入れるかを聞く（y/N）。入れる時は、確かめた版を GitHub から取って入れる。
 #    すでに入っている物には手を付けない。入れなくても記事は書ける。後から入れれば、スキルが記事を書くたびに見つけて使う。
 #    聞けない時（端末でない・AI が実行した時）は入れない。--with-imozuru・--with-yomiyasu・--with-extras（両方）で入れる。--no-extras で聞かない
+# 4. 投稿者名（記事の下に「投稿者：<名前>」と表示される名前。サイトを読む人に見える）を聞く。登録済みなら Enter でそのまま。
+#    確かめと書き込みは post.mjs --set-name（~/.config/ai-digest/name）。--author-name で聞かずに決める（だめな名前なら入れる前に 2 で止める）。
+#    聞けない時は決めず、記事を書く時にスキルが聞く
 # 終わりの値: 0 済んだ／1 入れる先が無い／2 使い方の誤り／3 スキルは入れたが Node.js が要る／4 スキルは入れたが連携するスキルを入れられなかった
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,21 +25,26 @@ YOMIYASU_REPO="nanaism/yomiyasu";  YOMIYASU_REF="fbe02c93877d697cc53d9377b7a45dd
 
 backup_root="$HOME/.ai-digest-skill/backup"   # 前の版の置き場（スキルの置き場の外）
 
-usage() { echo "使い方: bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras]" >&2; }
+usage() { echo "使い方: bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras] [--author-name <投稿者名>]" >&2; }
 
 targets=()
 want_imozuru=""
 want_yomiyasu=""
-for a in "$@"; do
-  case "$a" in
+author_name=""
+author_given=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --claude) targets+=("$HOME/.claude/skills") ;;
     --codex) targets+=("$codex_home/skills") ;;
     --with-imozuru) want_imozuru=y ;;
     --with-yomiyasu) want_yomiyasu=y ;;
     --with-extras) want_imozuru=y; want_yomiyasu=y ;;
     --no-extras) [ -n "$want_imozuru" ] || want_imozuru=n; [ -n "$want_yomiyasu" ] || want_yomiyasu=n ;;
+    --author-name) [ "$#" -ge 2 ] || { usage; exit 2; }; author_name="$2"; author_given=1; shift ;;
+    --author-name=*) author_name="${1#*=}"; author_given=1 ;;
     *) usage; exit 2 ;;
   esac
+  shift
 done
 if [ "${#targets[@]}" -eq 0 ]; then
   [ -d "$HOME/.claude" ] && targets+=("$HOME/.claude/skills")
@@ -61,6 +69,18 @@ else
     *) echo "  入れ方（Linux・WSL）: https://nodejs.org/ja/download の手順か、nvm（https://github.com/nvm-sh/nvm）で nvm install 22" ;;
   esac
   echo "  スキルは入れておく。Node.js を入れた後は、入れ直さずにそのまま使える"
+fi
+
+# 投稿者名の確かめと書き込みは post.mjs に任せる（名前の決まりを 1 か所にする）
+name_file="$HOME/.config/ai-digest/name"
+set_name() { "$node_bin" "$src/scripts/post.mjs" --set-name "$1"; }
+current_name() { if [ -f "$name_file" ]; then head -n 1 "$name_file" 2>/dev/null | tr -d '\r' || true; fi; } # 読めなくても止めない（聞き直すだけ）
+if [ "$author_given" = 1 ]; then
+  if [ "$node_ok" = 1 ]; then
+    set_name "$author_name" || { echo "--author-name の名前を直して、もう一度実行する（スキルはまだ入れていない）" >&2; exit 2; }
+  else
+    echo "投稿者名: Node.js が無いので登録できない。Node.js を入れた後に --author-name を付けて実行し直すか、記事を書く時にスキルが聞く"
+  fi
 fi
 
 # 前の版を、スキルの置き場の外へ移す（$1 置き場 $2 名前 $3 残す名前）。同じ名前の前の控えは消す
@@ -149,6 +169,30 @@ extra() { # $1 名前 $2 リポジトリ $3 版 $4 入れるか（y・n・空＝
 }
 extra imozuru "$IMOZURU_REPO" "$IMOZURU_REF" "$want_imozuru" "出典を落として読む道具を持つスキル"
 extra yomiyasu "$YOMIYASU_REPO" "$YOMIYASU_REF" "$want_yomiyasu" "AI っぽい日本語を読みやすく整えるスキル"
+
+# 4. 投稿者名（--author-name で決めた時は聞かない）
+inst_post="${targets[0]}/ai-digest-post/scripts/post.mjs"
+if [ "$author_given" != 1 ]; then
+  cur="$(current_name)"
+  if [ "$node_ok" != 1 ]; then
+    if [ -n "$cur" ]; then echo "投稿者名: $cur（登録済み）"; else echo "投稿者名: Node.js を入れた後に node \"$inst_post\" --set-name \"<名前>\" で登録する。記事を書く時にスキルも聞く"; fi
+  elif can_ask; then
+    echo "投稿者名を決めます。記事の下に「投稿者：<名前>」と表示され、サイトを読む人に見えます。本名でなくてかまいません（30 字まで）"
+    while :; do
+      if [ -n "$cur" ]; then printf '投稿者名（今: %s。Enter でそのまま）: ' "$cur"; else printf '投稿者名（Enter で後にする）: '; fi
+      read -r ans || ans=""
+      if [ -z "$ans" ]; then
+        if [ -n "$cur" ]; then echo "投稿者名: $cur のまま"; else echo "投稿者名: 後にした。記事を書く時にスキルが聞く（node \"$inst_post\" --set-name \"<名前>\" でも登録できる）"; fi
+        break
+      fi
+      set_name "$ans" && break # だめな名前なら、理由（post.mjs が出す）を見せて聞き直す
+    done
+  elif [ -n "$cur" ]; then
+    echo "投稿者名: $cur（登録済み。記事の下に「投稿者：$cur」と表示される）"
+  else
+    echo "投稿者名: 聞けないので決めなかった（端末でない）。--author-name \"<名前>\" を付けて実行し直すか、記事を書く時にスキルが聞く"
+  fi
+fi
 
 echo "次は鍵とサイトの URL の登録: references/setup.md（入れた先のフォルダの中）"
 echo "確かめ: node \"${targets[0]}/ai-digest-post/scripts/post.mjs\" --check"

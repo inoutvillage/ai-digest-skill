@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { registeredKey, scrub } from './mask.mjs';
+import { registeredName, writtenBy } from './author.mjs';
 
 export const TITLE_MAX = 50;
 export const BODY_MAX = 1000;
@@ -60,8 +61,9 @@ export function sourcesText(frontmatter) {
   return out.map((l) => l.replace(/(^|\s)#.*$/, '')).join('\n');
 }
 
-/** 記事 1 本を確かめる。fix（直す）・look（見る）・本文の字数 */
-export function checkArticle(markdown, filename = '') {
+/** 記事 1 本を確かめる。fix（直す）・look（見る）・本文の字数。
+ *  author: 登録した投稿者名（written_by と照らし合わせる）。null は未登録。省くと照らし合わせない */
+export function checkArticle(markdown, filename = '', { author } = {}) {
   const fix = [];
   const look = [];
   const m = String(markdown).match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?([\s\S]*)$/);
@@ -80,7 +82,10 @@ export function checkArticle(markdown, filename = '') {
   if (!GENRES.includes(scalar(fm, 'genre') ?? '')) fix.push(`genre は次のどれか 1 つ: ${GENRES.join(' / ')}`);
   if (!CONFIDENCES.includes(scalar(fm, 'confidence') ?? '')) fix.push(`confidence は次のどれか: ${CONFIDENCES.join(' / ')}`);
   if (!/(?:^|[\s{,-])url:[ \t]*["']?https?:\/\//m.test(sourcesText(fm))) fix.push('sources に出典の URL が 1 つ以上要る（要約とリンクだけ。転載しない）');
-  if (!scalar(fm, 'written_by')) fix.push('written_by が空（"投稿者：いんきょ" のまま）');
+  const wb = scalar(fm, 'written_by') ?? '';
+  if (!wb) fix.push('written_by が空。記事の下に表示される投稿者名を「投稿者：」と登録した名前で書く（名前は node post.mjs --check で出る）');
+  else if (author && wb !== writtenBy(author)) look.push(`written_by（${wb}）が、登録した投稿者名の「${writtenBy(author)}」と違う。記事の下にこのまま表示される`);
+  else if (author === null) look.push('投稿者名が未登録。node post.mjs --set-name で登録すると、written_by と照らし合わせる');
   // 鍵を記事に書かない（公開されると誰でも投稿できてしまう）。表示には鍵の中身を出さない
   if (/aid_[0-9A-Za-z_-]{16,}|Bearer\s+\S{16,}/.test(String(markdown))) fix.push('鍵のような文字列（aid_… や Bearer …）がある。記事に鍵を書かない');
   // サイトは frontmatter も含めて生の HTML を断る（注釈の中の「<slug>」のような書き方も）。コードの中と自動リンクは除く
@@ -114,11 +119,12 @@ if (process.argv[1] && basename(process.argv[1]) === 'check.mjs') {
   // 画面に出す物は全部ここを通す（ファイル名・読めない時の例外文・HTML のような書き方の抜き出しに鍵が混ざっていても出さない）
   const key = registeredKey();
   const say = (t) => console.log(scrub(t, key));
+  const author = registeredName().name || null;
   let bad = 0;
   for (const f of files) {
     let r;
     try {
-      r = checkArticle(readFileSync(f, 'utf-8'), f);
+      r = checkArticle(readFileSync(f, 'utf-8'), f, { author });
     } catch (e) {
       say(`✗ ${f}: 読めない（${e.message}）`);
       bad++;

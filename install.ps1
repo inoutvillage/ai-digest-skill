@@ -1,11 +1,13 @@
 ﻿# ai-digest の投稿スキル（ai-digest-post）を入れる。Windows の PowerShell 用（Mac・Linux・WSL は install.sh）。
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Claude] [-Codex] [-WithImozuru] [-WithYomiyasu] [-WithExtras] [-NoExtras]
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Claude] [-Codex] [-WithImozuru] [-WithYomiyasu] [-WithExtras] [-NoExtras] [-AuthorName <投稿者名>]
 # 流れと終わりの値は install.sh と同じ:
 #   Node.js 22 以上を見る（無ければ入れ方を案内）→ スキルを写す（前の版は ~/.ai-digest-skill/backup/ に。スキルの置き場の外）→ imozuru と yomiyasu が無ければ入れるかを聞く（y/N）
+#   → 投稿者名（記事の下に「投稿者：<名前>」と表示される名前）を聞く（-AuthorName で聞かずに決める。だめな名前なら入れる前に 2 で止める）
 #   0 済んだ／1 入れる先が無い／3 スキルは入れたが Node.js が要る／4 スキルは入れたが連携するスキルを入れられなかった
 param(
   [switch]$Claude, [switch]$Codex,
   [switch]$WithImozuru, [switch]$WithYomiyasu, [switch]$WithExtras, [switch]$NoExtras,
+  [string]$AuthorName,
   [string]$HomeDir = $HOME   # 試し用に差し替えられる
 )
 $ErrorActionPreference = 'Stop'
@@ -63,6 +65,43 @@ if ($major -ge 22) {
   Write-Host "注意: Node.js 22 以上が見つからない（今: $now）。送る道具と送る前の確かめに要る"
   Write-Host '  入れ方（Windows）: https://nodejs.org/ja/download から入れるか、winget install OpenJS.NodeJS.LTS'
   Write-Host '  スキルは入れておく。Node.js を入れた後は、入れ直さずにそのまま使える'
+}
+
+# 投稿者名の確かめと書き込みは post.mjs に任せる（名前の決まりを 1 か所にする）
+$nameFile = Join-Path $HomeDir '.config\ai-digest\name'
+function Invoke-SetName([string]$n) {
+  # Node の出力（UTF-8）を崩さずに受け、試し用の HomeDir も Node に渡す。Node が標準エラーに書いても止めない
+  $prevEap = $ErrorActionPreference
+  $prevHome = $env:HOME
+  $prevProfile = $env:USERPROFILE
+  $prevEnc = $null
+  $ErrorActionPreference = 'Continue'
+  try { $prevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch { $prevEnc = $null }
+  try {
+    $env:HOME = $HomeDir
+    $env:USERPROFILE = $HomeDir
+    $msg = & $nodeBin (Join-Path $src 'scripts\post.mjs') --set-name $n 2>&1
+    $code = $LASTEXITCODE
+  } finally {
+    $env:HOME = $prevHome
+    $env:USERPROFILE = $prevProfile
+    if ($prevEnc) { try { [Console]::OutputEncoding = $prevEnc } catch {} }
+    $ErrorActionPreference = $prevEap
+  }
+  foreach ($l in @($msg)) { Write-Host "$l" }
+  return ($code -eq 0)
+}
+function Get-CurrentName {
+  if (-not (Test-Path -LiteralPath $nameFile)) { return '' }
+  try { return ('' + (Get-Content -LiteralPath $nameFile -Encoding UTF8 -TotalCount 1)).Trim() } catch { return '' }
+}
+$authorGiven = $PSBoundParameters.ContainsKey('AuthorName')
+if ($authorGiven) {
+  if ($nodeOk) {
+    if (-not (Invoke-SetName $AuthorName)) { Write-Host '-AuthorName の名前を直して、もう一度実行する（スキルはまだ入れていない）'; exit 2 }
+  } else {
+    Write-Host '投稿者名: Node.js が無いので登録できない。Node.js を入れた後に -AuthorName を付けて実行し直すか、記事を書く時にスキルが聞く'
+  }
 }
 
 # 2. スキル（入れる先の skills フォルダを先に作る。無いと Copy-Item が違う場所へ写すため）
@@ -124,6 +163,30 @@ try {
   }
 } finally {
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+}
+
+# 4. 投稿者名（-AuthorName で決めた時は聞かない）
+$instPost = Join-Path $targets[0] 'ai-digest-post\scripts\post.mjs'
+if (-not $authorGiven) {
+  $cur = Get-CurrentName
+  if (-not $nodeOk) {
+    if ($cur) { Write-Host "投稿者名: $cur（登録済み）" } else { Write-Host ('投稿者名: Node.js を入れた後に node "{0}" --set-name "<名前>" で登録する。記事を書く時にスキルも聞く' -f $instPost) }
+  } elseif ($assumeTty -or ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected)) {
+    Write-Host '投稿者名を決めます。記事の下に「投稿者：<名前>」と表示され、サイトを読む人に見えます。本名でなくてかまいません（30 字まで）'
+    while ($true) {
+      $prompt = if ($cur) { "投稿者名（今: $cur。Enter でそのまま）" } else { '投稿者名（Enter で後にする）' }
+      $ans = Read-Host $prompt
+      if (-not $ans) {
+        if ($cur) { Write-Host "投稿者名: $cur のまま" } else { Write-Host ('投稿者名: 後にした。記事を書く時にスキルが聞く（node "{0}" --set-name "<名前>" でも登録できる）' -f $instPost) }
+        break
+      }
+      if (Invoke-SetName $ans) { break }   # だめな名前なら、理由（post.mjs が出す）を見せて聞き直す
+    }
+  } elseif ($cur) {
+    Write-Host "投稿者名: $cur（登録済み。記事の下に「投稿者：$cur」と表示される）"
+  } else {
+    Write-Host '投稿者名: 聞けないので決めなかった（端末でない）。-AuthorName "<名前>" を付けて実行し直すか、記事を書く時にスキルが聞く'
+  }
 }
 
 Write-Host '次は鍵とサイトの URL の登録: references\setup.md（入れた先のフォルダの中）'

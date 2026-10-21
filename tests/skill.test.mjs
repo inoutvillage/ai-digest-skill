@@ -30,7 +30,7 @@ sources:
     kind: article
     note: "n"
 confidence: 推論
-written_by: "投稿者：いんきょ"
+written_by: "投稿者：たなか"
 origin_ref: ""
 ---
 
@@ -132,11 +132,12 @@ async function fakeSite() {
   return { url: `http://127.0.0.1:${server.address().port}`, got, close: () => new Promise((r) => server.close(r)) };
 }
 
-function homeWith({ url, key } = {}) {
+function homeWith({ url, key, name } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'aid-home-'));
   mkdirSync(join(home, '.config/ai-digest'), { recursive: true });
   if (url) writeFileSync(join(home, '.config/ai-digest/url'), url);
   if (key) writeFileSync(join(home, '.config/ai-digest/key'), key);
+  if (name) writeFileSync(join(home, '.config/ai-digest/name'), `${name}\n`);
   return home;
 }
 
@@ -145,18 +146,20 @@ const run = (script, args, home) =>
     const env = { ...process.env, HOME: home };
     delete env.AI_DIGEST_API_URL;
     delete env.AI_DIGEST_API_KEY;
+    delete env.AI_DIGEST_AUTHOR_NAME;
     execFile(process.execPath, [script, ...args], { env, cwd: home }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, out: stdout + stderr }));
   });
 
 test('送る道具: --check は登録した鍵で名前と役を出す。鍵そのものは出さない', async () => {
   const site = await fakeSite();
-  const home = homeWith({ url: site.url, key: `${KEY}\n` });
+  const home = homeWith({ url: site.url, key: `${KEY}\n`, name: 'たなか' });
   try {
     for (const script of [join(SKILL, 'scripts/post.mjs')]) {
       const r = await run(script, ['--check'], home);
       assert.equal(r.code, 0, r.out);
       assert.match(r.out, /鍵は有効です: tanaka（writer・下書きまで/);
       assert.match(r.out, /自分の記事 2 本/);
+      assert.match(r.out, /投稿者名: たなか（記事の下に「投稿者：たなか」と表示される/);
       assert.doesNotMatch(r.out, new RegExp(KEY));
     }
     assert.equal(site.got.at(-1).auth, `Bearer ${KEY}`);
@@ -370,6 +373,7 @@ test('同梱の雛形を埋めた記事は、送る前の確かめを通る（�
     [/^    kind: ""/m, '    kind: article'],
     [/^    note: ""/m, '    note: "何が書いてあるか"'],
     [/^confidence: ""/m, 'confidence: 推論'],
+    [/^written_by: ""/m, 'written_by: "投稿者：たなか"'],
   ];
   for (const [re, to] of fill) {
     assert.match(t, re);
@@ -847,6 +851,100 @@ test('履歴を探す: 探さない場所の設定があるのに読めない時
     assert.equal(existsSync(join(t.home, '.ai-digest-skill/history')), false);
   } finally {
     chmodSync(f, 0o600);
+    t.cleanup();
+  }
+});
+
+// ---- 投稿者名（記事の下に「投稿者：<名前>」と表示される名前） ----
+import { validateName } from '../skills/ai-digest-post/scripts/author.mjs';
+
+test('投稿者名の決まり: 頭の「投稿者：」と前後の空白は外す。空・長い・" \\ < >・改行・鍵のような文字列は断る', () => {
+  assert.deepEqual(validateName('  投稿者：たなか '), { name: 'たなか' });
+  assert.deepEqual(validateName('Tanaka Taro'), { name: 'Tanaka Taro' });
+  for (const bad of ['', '   ', '投稿者：', 'あ'.repeat(31), '"たなか"', 'a\\b', '<b>x</b>', 'た\nなか', `aid_${'0'.repeat(48)}`]) assert.ok(validateName(bad).error, JSON.stringify(bad));
+  assert.equal(validateName('あ'.repeat(30)).name, 'あ'.repeat(30));
+});
+
+test('送る道具: --set-name で投稿者名を登録する（鍵が無くても使える）。だめな名前は 2 で、登録を変えない', async () => {
+  const home = homeWith({});
+  const post = join(SKILL, 'scripts/post.mjs');
+  const file = join(home, '.config/ai-digest/name');
+  try {
+    const r = await run(post, ['--set-name', '投稿者：たなか'], home);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /記事の下に「投稿者：たなか」と表示される/);
+    assert.equal(readFileSync(file, 'utf-8'), 'たなか\n');
+    const bad = await run(post, ['--set-name', '<b>'], home);
+    assert.equal(bad.code, 2);
+    assert.match(bad.out, /投稿者名にできない/);
+    assert.equal(readFileSync(file, 'utf-8'), 'たなか\n');
+    assert.equal((await run(post, ['--set-name'], home)).code, 2);
+    assert.equal((await run(post, ['--set-name', 'はなこ', '--check'], home)).code, 2);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('送る道具: 鍵は有効でも投稿者名が未登録なら --check は 5 で、登録のしかたを出す。鍵が無い時も投稿者名の行は出す', async () => {
+  const site = await fakeSite();
+  const noName = homeWith({ url: site.url, key: KEY });
+  const nothing = homeWith({});
+  try {
+    const r = await run(join(SKILL, 'scripts/post.mjs'), ['--check'], noName);
+    assert.equal(r.code, 5, r.out);
+    assert.match(r.out, /鍵は有効です/);
+    assert.match(r.out, /投稿者名: 未登録。記事の下に「投稿者：<名前>」と表示される名前を決めて、node post\.mjs --set-name/);
+    const r2 = await run(join(SKILL, 'scripts/post.mjs'), ['--check'], nothing);
+    assert.equal(r2.code, 2);
+    assert.match(r2.out, /投稿者名: 未登録/);
+  } finally {
+    await site.close();
+    rmSync(noName, { recursive: true, force: true });
+    rmSync(nothing, { recursive: true, force: true });
+  }
+});
+
+test('送る前の確かめ: written_by が空なら「直す」。登録した投稿者名と違えば「見る」。未登録なら「見る」で登録を勧める', () => {
+  const empty = GOOD.replace('written_by: "投稿者：たなか"', 'written_by: ""');
+  assert.ok(checkArticle(empty, '2026-10-20_sample-article.md').fix.some((f) => /written_by が空。記事の下に表示される投稿者名/.test(f)));
+  assert.deepEqual(checkArticle(GOOD, '2026-10-20_sample-article.md', { author: 'たなか' }).look, []);
+  assert.ok(checkArticle(GOOD, '2026-10-20_sample-article.md', { author: 'はなこ' }).look.some((l) => /登録した投稿者名の「投稿者：はなこ」と違う/.test(l)));
+  assert.ok(checkArticle(GOOD, '2026-10-20_sample-article.md', { author: null }).look.some((l) => /投稿者名が未登録/.test(l)));
+});
+
+test('入れる道具: 投稿者名を聞いて登録する。だめな名前は聞き直す。登録済みなら Enter でそのまま', async () => {
+  const t = installSetup();
+  try {
+    const env = { AI_DIGEST_EXTRAS_SOURCE: t.extras, AI_DIGEST_INSTALL_ASSUME_TTY: '1' };
+    const r = await installer({ home: t.home, args: ['--no-extras'], env, input: '<b>\nたなか\n' });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /記事の下に「投稿者：<名前>」と表示され、サイトを読む人に見えます/);
+    assert.match(r.out, /投稿者名にできない/);
+    assert.equal(readFileSync(join(t.home, '.config/ai-digest/name'), 'utf-8'), 'たなか\n');
+    const again = await installer({ home: t.home, args: ['--no-extras'], env, input: '\n' });
+    assert.match(again.out, /投稿者名（今: たなか。Enter でそのまま）/);
+    assert.match(again.out, /投稿者名: たなか のまま/);
+    assert.equal(readFileSync(join(t.home, '.config/ai-digest/name'), 'utf-8'), 'たなか\n');
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('入れる道具: --author-name で聞かずに決める。だめな名前は入れる前に 2 で止める。聞けない時は決めずに案内する', async () => {
+  const t = installSetup();
+  try {
+    const bad = await installer({ home: t.home, args: ['--no-extras', '--author-name', '"x"'] });
+    assert.equal(bad.code, 2, bad.out);
+    assert.equal(existsSync(join(t.home, '.claude/skills/ai-digest-post')), false); // 入れる前に止めた
+    const quiet = await installer({ home: t.home, args: ['--no-extras'] });
+    assert.equal(quiet.code, 0, quiet.out);
+    assert.match(quiet.out, /投稿者名: 聞けないので決めなかった（端末でない）。--author-name/);
+    assert.equal(existsSync(join(t.home, '.config/ai-digest/name')), false);
+    const ok = await installer({ home: t.home, args: ['--no-extras', '--author-name', 'はなこ'] });
+    assert.equal(ok.code, 0, ok.out);
+    assert.equal(readFileSync(join(t.home, '.config/ai-digest/name'), 'utf-8'), 'はなこ\n');
+    assert.doesNotMatch(ok.out, /投稿者名（/); // 聞かない
+  } finally {
     t.cleanup();
   }
 });

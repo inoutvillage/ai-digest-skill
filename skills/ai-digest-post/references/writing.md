@@ -79,7 +79,7 @@
 | `image` | 絵を送る時だけ `/images/YYYY-MM-DD_<slug>.jpg`。無ければ行ごと消す |
 | `sources` | 上の「出典」 |
 | `confidence` | 上の表 |
-| `written_by` | `"投稿者：いんきょ"` のまま |
+| `written_by` | 記事の下に表示される投稿者名。`"投稿者：<登録した名前>"`（`node post.mjs --check` で出る名前）。利用者に頼まれない限り変えない |
 | `origin_ref` | 空のまま |
 
 ## 書かない物

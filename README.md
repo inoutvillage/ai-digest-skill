@@ -32,10 +32,11 @@ cd ai-digest-skill
 1. Node.js 22 以上があるかを見ます。無ければ入れ方を案内します。スキルは入れておくので、Node.js を入れた後はそのまま使えます
 2. スキルを、Claude Code と Codex の入っている方（両方なら両方）に写します。前の版は `~/.ai-digest-skill/backup/` に残します（スキルの置き場の外なので、古い版が読み込まれることはありません）。片方だけに入れる時は `--claude` か `--codex`（Windows は `-Claude` か `-Codex`）を付けます
 3. 連携するスキル（imozuru と yomiyasu。下の「連携するスキル」）が入っていなければ、入れるかを 1 つずつ聞きます（y/N）。入れなくても記事は書けます。後から入れた時も、スキルが記事を書くたびに見つけて使います。すでに入っている物には手を付けません
+4. 投稿者名を聞きます。**投稿者名は、記事の下に「投稿者：<名前>」と表示される名前で、サイトを読む人に見えます。** 本名でなくてかまいません。30 字までです。決めなかった時は、記事を書く時にスキルが聞きます。登録済みなら今の名前を見せ、Enter でそのまま使います
 
 ### AI に頼んで入れる時
 
-AI が入れる道具を動かすと、質問に答えられません。その時は連携するスキルを入れずに進みます。入れたい時は、先に AI に伝えて `--with-extras`（両方）・`--with-imozuru`・`--with-yomiyasu` を付けてもらいます（Windows は `-WithExtras`・`-WithImozuru`・`-WithYomiyasu`）。聞かずに入れない時は `--no-extras`（`-NoExtras`）です。
+AI が入れる道具を動かすと、質問に答えられません。その時は連携するスキルを入れずに進みます。入れたい時は、先に AI に伝えて `--with-extras`（両方）・`--with-imozuru`・`--with-yomiyasu` を付けてもらいます（Windows は `-WithExtras`・`-WithImozuru`・`-WithYomiyasu`）。聞かずに入れない時は `--no-extras`（`-NoExtras`）です。投稿者名も聞けないので、記事の下に表示したい名前を AI に伝えて `--author-name "<名前>"`（Windows は `-AuthorName "<名前>"`）を付けてもらいます。
 
 入れる道具の終わりの値: 0 は済んだ、3 はスキルを入れたが Node.js が要る、4 はスキルを入れたが連携するスキルを取れなかった。
 
@@ -48,6 +49,8 @@ AI が入れる道具を動かすと、質問に答えられません。その�
 運営から受け取った鍵とサイトの URL を、自分の端末に登録します。手順は `skills/ai-digest-post/references/setup.md` にあります。スキルも、鍵が無いと気づいた時にこの手順を案内します。
 
 **鍵を AI との会話に貼らないでください。** 登録は自分のターミナルで行います。
+
+投稿者名（記事の下に表示される名前）は、入れる道具が聞いて `~/.config/ai-digest/name` に置きます。鍵の名前とは別で、鍵の名前は記事に表示されません。後から変える時は `node skills/ai-digest-post/scripts/post.mjs --set-name "<名前>"` です。
 
 | 役 | できること |
 |---|---|
@@ -107,7 +110,8 @@ client-a
 ## 5. 道具を直接使う時
 
 ```bash
-node skills/ai-digest-post/scripts/post.mjs --check                          # 鍵と URL の確かめ
+node skills/ai-digest-post/scripts/post.mjs --check                          # 鍵と URL と投稿者名の確かめ
+node skills/ai-digest-post/scripts/post.mjs --set-name "たなか"               # 投稿者名（記事の下に表示される名前）を登録・変更する
 node skills/ai-digest-post/scripts/find-history.mjs --query "EmbeddingGemma 文字起こし"   # 前に調べた会話を探す（メモの場所を出す）
 node skills/ai-digest-post/scripts/check.mjs 2026-10-20_my-article.md        # 送る前の確かめ
 node skills/ai-digest-post/scripts/post.mjs 2026-10-20_my-article.md --image 2026-10-20_my-article.jpg   # 下書きで送る

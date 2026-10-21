@@ -15,7 +15,7 @@ sources:                     # 出典。要約とリンクだけ（転載しな�
     kind: ""                 # x / reddit / github / article / official / paper
     note: ""                 # 何が書いてあるかを一言（リンクの文字になる）
 confidence: ""               # 公式の発表 / 試した結果 / 投稿の主張 / 推論
-written_by: "投稿者：いんきょ"      # 記事の下の署名（固定）
+written_by: ""               # 記事の下に表示される投稿者名。「投稿者：」の後に登録した名前（node post.mjs --check で出る）
 origin_ref: ""               # 空のまま
 ---
 
