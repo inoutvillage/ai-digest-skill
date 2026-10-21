@@ -1,7 +1,7 @@
 ﻿# ai-digest の投稿スキル（ai-digest-post）を入れる。Windows の PowerShell 用（Mac・Linux・WSL は install.sh）。
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Claude] [-Codex] [-WithImozuru] [-WithYomiyasu] [-WithExtras] [-NoExtras]
 # 流れと終わりの値は install.sh と同じ:
-#   Node.js 22 以上を見る（無ければ入れ方を案内）→ スキルを写す（前の版は .bak）→ imozuru と yomiyasu が無ければ入れるかを聞く（y/N）
+#   Node.js 22 以上を見る（無ければ入れ方を案内）→ スキルを写す（前の版は ~/.ai-digest-skill/backup/ に。スキルの置き場の外）→ imozuru と yomiyasu が無ければ入れるかを聞く（y/N）
 #   0 済んだ／1 入れる先が無い／3 スキルは入れたが Node.js が要る／4 スキルは入れたが連携するスキルを入れられなかった
 param(
   [switch]$Claude, [switch]$Codex,
@@ -14,6 +14,19 @@ $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HomeDir 
 $nodeBin = if ($env:AI_DIGEST_NODE_BIN) { $env:AI_DIGEST_NODE_BIN } else { 'node' }
 $extrasSource = $env:AI_DIGEST_EXTRAS_SOURCE      # 試し用: <フォルダ>\<名前>\SKILL.md を GitHub の代わりに使う
 $assumeTty = [bool]$env:AI_DIGEST_INSTALL_ASSUME_TTY
+$backupRoot = Join-Path $HomeDir '.ai-digest-skill\backup'   # 前の版の置き場（スキルの置き場の外。中に残すと古い版も読み込まれる）
+function Get-Label([string]$t) {
+  if ($t -eq (Join-Path $HomeDir '.claude\skills')) { return 'claude' }
+  if ($t -eq (Join-Path $codexHome 'skills')) { return 'codex' }
+  return (Split-Path (Split-Path $t -Parent) -Leaf)
+}
+function Move-ToBackup([string]$t, [string]$name, [string]$keep) {
+  $b = Join-Path $backupRoot (Get-Label $t)
+  New-Item -ItemType Directory -Force $b | Out-Null
+  $to = Join-Path $b $keep
+  if (Test-Path $to) { Remove-Item -Recurse -Force $to }
+  Move-Item (Join-Path $t $name) $to
+}
 
 # 連携するスキル（入れる版は、確かめた commit に固定する）
 $extras = @(
@@ -56,12 +69,13 @@ if ($major -ge 22) {
 foreach ($t in $targets) {
   New-Item -ItemType Directory -Force $t | Out-Null
   $dest = Join-Path $t 'ai-digest-post'
-  if (Test-Path $dest) {
-    if (Test-Path "$dest.bak") { Remove-Item -Recurse -Force "$dest.bak" }
-    Move-Item $dest "$dest.bak"
+  # 前のインストーラーが置き場の中に残した控え（*.bak）は、読み込まれないよう外へ移す
+  foreach ($old in @('ai-digest-post.bak', 'imozuru.bak', 'yomiyasu.bak')) {
+    if (Test-Path (Join-Path $t $old)) { Move-ToBackup $t $old $old; Write-Host ("移した（置き場の外へ）: {0} → {1}" -f (Join-Path $t $old), (Join-Path (Join-Path $backupRoot (Get-Label $t)) $old)) }
   }
+  if (Test-Path $dest) { Move-ToBackup $t 'ai-digest-post' 'ai-digest-post' }
   Copy-Item -Recurse $src $dest
-  Write-Host "入れた: $dest"
+  Write-Host ("入れた: {0}（前の版は {1}）" -f $dest, (Join-Path (Join-Path $backupRoot (Get-Label $t)) 'ai-digest-post'))
 }
 
 # 3. 連携するスキル（取ってきた物は一時フォルダに置き、終わる時に消す）
@@ -103,7 +117,7 @@ try {
     foreach ($t in $targets) {
       $d = Join-Path $t $name
       if (Test-Path (Join-Path $d 'SKILL.md')) { Write-Host "${name}: すでに入っている（そのまま使う）: $d"; continue }
-      if (Test-Path $d) { if (Test-Path "$d.bak") { Remove-Item -Recurse -Force "$d.bak" }; Move-Item $d "$d.bak" }
+      if (Test-Path $d) { Move-ToBackup $t $name $name }   # 壊れた物（SKILL.md が無い）は置き場の外に残して入れ直す
       Copy-Item -Recurse $dir $d
       Write-Host ("入れた: {0}（{1} の版 {2}）" -f $d, $x.Repo, $x.Ref.Substring(0, 7))
     }

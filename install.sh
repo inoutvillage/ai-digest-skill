@@ -2,7 +2,8 @@
 # ai-digest の投稿スキル（ai-digest-post）を入れる。Mac・Linux・WSL 用（Windows は install.ps1）。
 #   bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras]
 # 1. Node.js 22 以上があるかを見る。無ければ入れ方を案内する（スキルは入れる）
-# 2. スキルを、入っている方（Claude Code の ~/.claude と Codex の ~/.codex。両方なら両方）に写す。前の版は ai-digest-post.bak に残す
+# 2. スキルを、入っている方（Claude Code の ~/.claude と Codex の ~/.codex。両方なら両方）に写す。
+#    前の版は ~/.ai-digest-skill/backup/<claude か codex>/ に残す（スキルの置き場の外。置き場の中に残すと古い版も読み込まれる）
 # 3. 連携するスキル imozuru と yomiyasu が無ければ、入れるかを聞く（y/N）。入れる時は、確かめた版を GitHub から取って入れる。
 #    すでに入っている物には手を付けない。入れなくても記事は書ける。後から入れれば、スキルが記事を書くたびに見つけて使う。
 #    聞けない時（端末でない・AI が実行した時）は入れない。--with-imozuru・--with-yomiyasu・--with-extras（両方）で入れる。--no-extras で聞かない
@@ -18,6 +19,8 @@ assume_tty="${AI_DIGEST_INSTALL_ASSUME_TTY:-}"    # 試し用: 端末でなく�
 # 連携するスキル（入れる版は、確かめた commit に固定する）
 IMOZURU_REPO="MaryCache/imozuru";  IMOZURU_REF="ecb82c71b611872a0f49e783eda3bec987c80d91"
 YOMIYASU_REPO="nanaism/yomiyasu";  YOMIYASU_REF="fbe02c93877d697cc53d9377b7a45dd8a1dd99b3"
+
+backup_root="$HOME/.ai-digest-skill/backup"   # 前の版の置き場（スキルの置き場の外）
 
 usage() { echo "使い方: bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras]" >&2; }
 
@@ -60,18 +63,28 @@ else
   echo "  スキルは入れておく。Node.js を入れた後は、入れ直さずにそのまま使える"
 fi
 
+# 前の版を、スキルの置き場の外へ移す（$1 置き場 $2 名前 $3 残す名前）。同じ名前の前の控えは消す
+label_of() { if [ "$1" = "$HOME/.claude/skills" ]; then echo claude; elif [ "$1" = "$codex_home/skills" ]; then echo codex; else basename "$(dirname "$1")"; fi; }
+stash() {
+  local b="$backup_root/$(label_of "$1")"
+  mkdir -p "$b"
+  rm -rf "${b:?}/$3"
+  mv "$1/$2" "$b/$3"
+}
+
 # 2. スキル
 for t in "${targets[@]}"; do
   mkdir -p "$t"
   dest="$t/ai-digest-post"
+  # 前のインストーラーが置き場の中に残した控え（*.bak）は、読み込まれないよう外へ移す
+  for old in ai-digest-post.bak imozuru.bak yomiyasu.bak; do
+    if [ -e "$t/$old" ] || [ -L "$t/$old" ]; then stash "$t" "$old" "$old"; echo "移した（置き場の外へ）: $t/$old → $backup_root/$(label_of "$t")/$old"; fi
+  done
   rm -rf "$dest.new"
   cp -R "$src" "$dest.new"
-  if [ -e "$dest" ] || [ -L "$dest" ]; then
-    rm -rf "$dest.bak"
-    mv "$dest" "$dest.bak"
-  fi
+  if [ -e "$dest" ] || [ -L "$dest" ]; then stash "$t" ai-digest-post ai-digest-post; fi
   mv "$dest.new" "$dest"
-  echo "入れた: $dest"
+  echo "入れた: $dest（前の版は $backup_root/$(label_of "$t")/ai-digest-post）"
 done
 
 # 3. 連携するスキル（取ってきた物は一時フォルダに置き、終わる時に消す）
@@ -124,9 +137,8 @@ extra() { # $1 名前 $2 リポジトリ $3 版 $4 入れるか（y・n・空＝
       echo "$name: すでに入っている（そのまま使う）: $t/$name"
       continue
     fi
-    if [ -e "$t/$name" ] || [ -L "$t/$name" ]; then # 壊れた物（SKILL.md が無い）は .bak に残して入れ直す
-      rm -rf "$t/$name.bak"
-      mv "$t/$name" "$t/$name.bak"
+    if [ -e "$t/$name" ] || [ -L "$t/$name" ]; then # 壊れた物（SKILL.md が無い）は置き場の外に残して入れ直す
+      stash "$t" "$name" "$name"
     fi
     cp -R "$dir" "$t/$name"
     echo "入れた: $t/$name（$repo の版 ${ref:0:7}）"

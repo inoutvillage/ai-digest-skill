@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkArticle, checkTitle, scalar, sourcesText } from '../skills/ai-digest-post/scripts/check.mjs';
@@ -229,6 +229,17 @@ function installer({ home, args = [], env = {}, input = '' }) {
   });
 }
 
+/** スキルの置き場に、同じスキルの控え（*.bak など）が無いこと。有効な ai-digest-post は 1 つだけ */
+function assertOneSkillEach(home) {
+  for (const d of ['.claude/skills', '.codex/skills']) {
+    const dir = join(home, d);
+    if (!existsSync(dir)) continue;
+    const names = readdirSync(dir);
+    assert.deepEqual(names.filter((n) => n.endsWith('.bak') || n.endsWith('.new')), [], `${d} に控えが残っている`);
+    assert.equal(names.filter((n) => existsSync(join(dir, n, 'SKILL.md')) && readFileSync(join(dir, n, 'SKILL.md'), 'utf-8').includes('name: ai-digest-post')).length, existsSync(join(dir, 'ai-digest-post')) ? 1 : 0, d);
+  }
+}
+
 function installSetup({ claude = true, codex = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'aid-install-'));
   if (claude) mkdirSync(join(home, '.claude'));
@@ -241,7 +252,7 @@ function installSetup({ claude = true, codex = true } = {}) {
   return { home, extras, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
 
-test('入れる道具: Claude Code と Codex の入っている方に写す。入れ直すと前の版は .bak に残る。使い方の誤りは 2', async () => {
+test('入れる道具: Claude Code と Codex の入っている方に写す。入れ直すと前の版はスキルの置き場の外に残る。使い方の誤りは 2', async () => {
   const t = installSetup({ claude: false, codex: false });
   try {
     assert.equal((await installer({ home: t.home })).code, 1); // どちらも無い
@@ -251,8 +262,9 @@ test('入れる道具: Claude Code と Codex の入っている方に写す。�
     assert.equal(r.code, 0, r.out);
     for (const d of ['.claude/skills', '.codex/skills']) assert.ok(existsSync(join(t.home, d, 'ai-digest-post/SKILL.md')), d);
     assert.equal((await installer({ home: t.home, args: ['--codex', '--no-extras'] })).code, 0);
-    assert.ok(existsSync(join(t.home, '.codex/skills/ai-digest-post.bak/SKILL.md')));
-    assert.ok(!existsSync(join(t.home, '.claude/skills/ai-digest-post.bak')));
+    assert.ok(existsSync(join(t.home, '.ai-digest-skill/backup/codex/ai-digest-post/SKILL.md')));
+    assert.ok(!existsSync(join(t.home, '.ai-digest-skill/backup/claude')));
+    assertOneSkillEach(t.home);
     assert.equal((await installer({ home: t.home, args: ['--both'] })).code, 2);
   } finally {
     t.cleanup();
@@ -294,7 +306,7 @@ test('入れる道具: --with-extras で両方を両方の道具に入れる。2
     for (const d of ['.claude/skills', '.codex/skills']) for (const n of ['imozuru', 'yomiyasu']) assert.ok(existsSync(join(t.home, d, n, 'SKILL.md')), `${d}/${n}`);
     const r2 = await installer({ home: t.home, args: ['--with-extras'], env: { AI_DIGEST_EXTRAS_SOURCE: t.extras } });
     assert.match(r2.out, /imozuru: すでに入っている。記事を書く時に使われる/);
-    assert.ok(!existsSync(join(t.home, '.claude/skills/imozuru.bak')));
+    assertOneSkillEach(t.home);
   } finally {
     t.cleanup();
   }
@@ -324,7 +336,8 @@ test('入れる道具: 利用者がすでに入れている連携するスキル
     assert.equal(r.code, 0, r.out);
     assert.equal(readFileSync(join(t.home, '.claude/skills/imozuru/SKILL.md'), 'utf-8'), '自分で入れた版\n');
     assert.match(readFileSync(join(t.home, '.codex/skills/imozuru/SKILL.md'), 'utf-8'), /見本/);
-    assert.ok(existsSync(join(t.home, '.codex/skills/imozuru.bak')));
+    assert.ok(existsSync(join(t.home, '.ai-digest-skill/backup/codex/imozuru'))); // 壊れた物は置き場の外へ
+    assertOneSkillEach(t.home);
     assert.match(r.out, /yomiyasu: 入れない/); // --no-extras は、指定の無い方だけを「入れない」にする
   } finally {
     t.cleanup();
@@ -508,4 +521,21 @@ test('疑問形・煽り・した話・〜へ・空白・長さは指摘', () =>
   assert.match(checkTitle('1 時間の音声が約 13 秒で文字になる').join('/'), /空白/);
   assert.match(checkTitle('あ'.repeat(51)).join('/'), /長い/);
   assert.match(checkTitle('').join('/'), /空/);
+});
+
+test('入れる道具: 前のインストーラーが置き場の中に残した *.bak は、置き場の外へ移す（読み込まれない）', async () => {
+  const t = installSetup();
+  try {
+    for (const d of ['.claude/skills', '.codex/skills']) {
+      mkdirSync(join(t.home, d, 'ai-digest-post.bak'), { recursive: true });
+      writeFileSync(join(t.home, d, 'ai-digest-post.bak', 'SKILL.md'), '---\nname: ai-digest-post\n---\n古い版\n');
+    }
+    const r = await installer({ home: t.home, args: ['--no-extras'] });
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /移した（置き場の外へ）: .*\.claude\/skills\/ai-digest-post\.bak/);
+    assert.match(readFileSync(join(t.home, '.ai-digest-skill/backup/claude/ai-digest-post.bak/SKILL.md'), 'utf-8'), /古い版/);
+    assertOneSkillEach(t.home);
+  } finally {
+    t.cleanup();
+  }
 });
