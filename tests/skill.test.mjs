@@ -1,11 +1,11 @@
 // スキル（skills/ai-digest-post）のテスト。要る物は Node.js 22 以上と bash（入れる道具の試し）だけ。
-//   node --test tests/
-// 送る前の確かめ・見出しの決まり・送る道具（偽のサーバーで実際に起動）・鍵を表示しないこと・入れる道具・スキルの説明文。
+//   node --test（このリポジトリの一番上で）
+// 送る前の確かめ・見出しの決まり・送る道具（偽のサーバーで実際に起動）・鍵を表示しないこと・入れる道具・スキルの説明文・履歴を探す道具（作った会話の記録で）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkArticle, checkTitle, scalar, sourcesText } from '../skills/ai-digest-post/scripts/check.mjs';
@@ -86,7 +86,7 @@ test('スキルの説明文: 名前はフォルダと同じ。説明は Codex �
   assert.equal(scalar(s.split(/^---$/m)[1], 'name'), 'ai-digest-post');
   const d = scalar(s.split(/^---$/m)[1], 'description');
   assert.ok(d.length > 50 && d.length <= 500, `説明 ${d.length} 字`);
-  for (const f of ['scripts/post.mjs', 'scripts/check.mjs', 'assets/template.md', 'references/setup.md', 'references/writing.md', 'references/images.md']) {
+  for (const f of ['scripts/post.mjs', 'scripts/check.mjs', 'scripts/find-history.mjs', 'assets/template.md', 'references/setup.md', 'references/writing.md', 'references/images.md']) {
     assert.ok(s.includes(`\`${f}\``), `${f} が SKILL.md に書かれていない`);
     assert.ok(existsSync(join(SKILL, f)), `${f} が無い`);
   }
@@ -537,5 +537,237 @@ test('入れる道具: 前のインストーラーが置き場の中に残した
     assertOneSkillEach(t.home);
   } finally {
     t.cleanup();
+  }
+});
+
+// ---- 履歴を探す道具（find-history.mjs）。本物の会話の記録は読まない（作った記録だけ） ----
+import { byteRes, excerpt, findHistory, hasWord, publicUrl } from '../skills/ai-digest-post/scripts/find-history.mjs';
+import { maskSecrets } from '../skills/ai-digest-post/scripts/mask.mjs';
+
+const HIST = join(SKILL, 'scripts/find-history.mjs');
+const NOW = Date.parse('2026-10-20T00:00:00Z');
+const ago = (d) => new Date(NOW - d * 86_400_000).toISOString();
+const J = (o) => JSON.stringify(o);
+const CUR = 'cccc3333-0000-0000-0000-000000000003';
+const SECRET = `sk-ant-api03-${'k'.repeat(30)}`;
+
+/** 作った会話の記録: 調べた会話（Claude Code・Codex）・ありふれた言葉だけの会話・この会話・壊れた記録 */
+function histSetup() {
+  const home = mkdtempSync(join(tmpdir(), 'aid-hist-'));
+  const claude = join(home, 'claude');
+  const codex = join(home, 'codex');
+  const proj = join(claude, 'projects', '-work-research');
+  mkdirSync(join(proj, CUR, 'subagents'), { recursive: true });
+  mkdirSync(join(claude, 'projects', '-work-broken'), { recursive: true });
+  mkdirSync(join(codex, 'sessions', '2026', '10', '01'), { recursive: true });
+  const user = (text, d, extra = {}) => J({ parentUuid: null, isSidechain: false, type: 'user', message: { role: 'user', content: text }, cwd: '/work/research', timestamp: ago(d), ...extra });
+  const ai = (content, d) => J({ parentUuid: 'p', isSidechain: false, message: { model: 'm', id: 'msg', type: 'message', role: 'assistant', content }, type: 'assistant', timestamp: ago(d) });
+  const filler = Array.from({ length: 6 }, (_, i) => [user(`関係の無い話 ${i}`, 10), ai([{ type: 'text', text: `返事 ${i}` }], 10)]).flat();
+  writeFileSync(
+    join(proj, 'aaaa1111-0000-0000-0000-000000000001.jsonl'),
+    [
+      J({ type: 'ai-title', aiTitle: 'zebrafont の調べもの', sessionId: 'a1' }),
+      user('zebrafont という新しい書体の道具を調べて', 10),
+      ai([{ type: 'tool_use', id: 't1', name: 'WebFetch', input: { url: 'https://zebrafont.example.com/news', prompt: 'p' } }, { type: 'tool_use', id: 't2', name: 'WebSearch', input: { query: 'zebrafont release' } }], 10),
+      J({ parentUuid: 'y', isSidechain: false, type: 'user', message: { role: 'user', content: [{ tool_use_id: 't1', type: 'tool_result', content: 'zebrafont 道具の出力の中だけの文 TOOLONLY' }] }, timestamp: ago(10) }),
+      ai([{ type: 'thinking', thinking: 'zebrafont THINKING' }, { type: 'text', text: `調べた結果: zebrafont は 3 種類の太さがある。出典 https://zebrafont.example.com/news 。手元の http://localhost:3000/x と http://$h:3900/y は外す。鍵 ${SECRET}` }], 10),
+      J({ type: 'user', isMeta: true, message: { role: 'user', content: 'zebrafont META' }, timestamp: ago(10) }),
+      user('<command-name>/model</command-name> zebrafont COMMAND', 10),
+      ...filler,
+      user('別の話。書体の本を買った FARAWAY', 9),
+      ai([{ type: 'text', text: 'よかったですね' }], 9),
+    ].join('\n') + '\n',
+  );
+  // ありふれた言葉（書体）だけが出る会話。「書体」を軽い言葉にする
+  for (let i = 0; i < 10; i++) {
+    writeFileSync(join(proj, `bbbb${i}000-0000-0000-0000-00000000000${i}.jsonl`), [user(`書体の話 ${i}`, 5), ai([{ type: 'text', text: `書体は大事 ${i} https://fonts.example.org/${i}` }], 5)].join('\n') + '\n');
+  }
+  // この会話（要約された）と、その下請けの AI
+  writeFileSync(join(proj, `${CUR}.jsonl`), [user('zebrafont を記事にして', 1), user('This session is being continued. zebrafont SELFSUMMARY', 1, { isCompactSummary: true })].join('\n') + '\n');
+  writeFileSync(join(proj, CUR, 'subagents', 'agent-1.jsonl'), [user('zebrafont を探して', 1), ai([{ type: 'text', text: 'zebrafont SUBAGENT' }], 1)].join('\n') + '\n');
+  // 壊れた記録（言葉は出るが、JSON の行が無い）と、発言の無い会話（付けたしの記録だけ）
+  writeFileSync(join(claude, 'projects', '-work-broken', 'broken.jsonl'), 'zebrafont not json\n{"type":"user","message":{"role":"user","content":"zebrafont 途中で切れた行\n');
+  writeFileSync(join(proj, 'eeee5555-0000-0000-0000-000000000005.jsonl'), [J({ type: 'custom-title', customTitle: 'zebrafont', sessionId: 'e5' }), user('<command-name>/exit</command-name> zebrafont', 2)].join('\n') + '\n');
+  // Codex の調べた会話
+  const cx = (type, payload, d) => J({ timestamp: ago(d), type, payload });
+  writeFileSync(
+    join(codex, 'sessions', '2026', '10', '01', 'rollout-2026-10-01T00-00-00-dddd4444-0000-0000-0000-000000000004.jsonl'),
+    [
+      cx('session_meta', { id: 'dddd4444', timestamp: ago(19), cwd: '/work/codex' }, 19),
+      cx('response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>zebrafont ENVCTX</environment_context>' }] }, 19),
+      cx('response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'zebrafont の値段を調べて' }] }, 19),
+      cx('response_item', { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'zebrafont price', queries: ['zebrafont price'] } }, 19),
+      cx('response_item', { type: 'function_call', name: 'exec_command', arguments: J({ cmd: 'curl -s https://shop.zebrafont.example.com/price' }) }, 19),
+      cx('response_item', { type: 'function_call_output', call_id: 'c', output: 'zebrafont OUTPUTONLY' }, 19),
+      cx('response_item', { type: 'reasoning', summary: [], encrypted_content: 'zebrafont REASONING' }, 19),
+      cx('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'zebrafont は月 500 円。' }] }, 19),
+    ].join('\n') + '\n',
+  );
+  const env = { AI_DIGEST_CLAUDE_DIR: claude, AI_DIGEST_CODEX_DIR: codex, CLAUDE_CODE_SESSION_ID: CUR };
+  return { home, env, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+}
+
+test('履歴を探す: 調べた会話を上に並べ、関係する問いと答え・開いた URL・検索した言葉だけをメモにする（Claude Code と Codex）', async () => {
+  const t = histSetup();
+  const lines = [];
+  try {
+    const out = join(t.home, 'memos');
+    const r = await findHistory({ query: 'zebrafont 書体', env: t.env, home: t.home, now: NOW, out, log: (l) => lines.push(l) });
+    assert.equal(r.written.length, 5);
+    assert.match(r.written[0], /1-claude-000000000001\.md$/); // 調べた会話（強い言葉・URL・新しい）
+    assert.match(r.written[1], /2-codex-000000000004\.md$/); // Codex の調べた会話
+    const a = readFileSync(r.written[0], 'utf-8');
+    for (const s of ['3 種類の太さ', 'https://zebrafont.example.com/news', 'zebrafont release', 'zebrafont という新しい書体']) assert.ok(a.includes(s), s);
+    for (const s of ['TOOLONLY', 'THINKING', 'META', 'COMMAND', 'k'.repeat(30), 'FARAWAY']) assert.ok(!a.includes(s), `メモに ${s} が入った`);
+    // URL の一覧には、外から開ける物だけ（発言の文はそのまま写すので、文の中には残る）
+    const urlList = a.split('## 関係する所で開いた URL')[1].split('\n## ')[0];
+    assert.deepEqual(urlList.trim().split('\n').filter((l) => l.startsWith('- ')), ['- https://zebrafont.example.com/news']);
+    assert.match(a, /<伏せた>/);
+    const d = readFileSync(r.written[1], 'utf-8');
+    for (const s of ['月 500 円', 'https://shop.zebrafont.example.com/price', 'zebrafont price', '/work/codex']) assert.ok(d.includes(s), s);
+    for (const s of ['OUTPUTONLY', 'REASONING', 'ENVCTX']) assert.ok(!d.includes(s), `メモに ${s} が入った`);
+    // この会話は外す。要約されているので、要約の前も読めるメモを別に書く
+    assert.ok(r.written.every((p) => !p.includes('000000000003')));
+    assert.equal(r.selfMemos.length, 1);
+    assert.match(r.selfMemos[0], /0-this-claude-000000000003\.md$/);
+    assert.match(readFileSync(r.selfMemos[0], 'utf-8'), /SELFSUMMARY/);
+    assert.ok(lines.some((l) => l.startsWith('この会話（Claude Code）: 要約されているので')));
+    assert.ok(lines.some((l) => l.includes('この会話の下請けの AI の記録 1 件も外した')));
+    // 壊れた記録は数えて出す（黙って飛ばさない）。発言の無い会話は誤りにしない
+    assert.equal(r.unreadable, 1);
+    assert.ok(lines.some((l) => /読めなかった物: 1 件/.test(l)));
+    assert.ok(lines.join('\n').includes('broken.jsonl（壊れている）'));
+    assert.ok(lines.some((l) => /発言の無い会話: 1 件/.test(l)));
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('履歴を探す: 探さない場所（history-ignore）と、* の行で探さない設定', async () => {
+  const t = histSetup();
+  try {
+    mkdirSync(join(t.home, '.config/ai-digest'), { recursive: true });
+    writeFileSync(join(t.home, '.config/ai-digest/history-ignore'), '# 注釈\n/work/codex   # Codex の作業は探さない\n-work-broken\n');
+    const r = await findHistory({ query: 'zebrafont', env: t.env, home: t.home, now: NOW, out: join(t.home, 'm1'), log: () => {} });
+    assert.ok(r.written.every((p) => !p.includes('codex')));
+    assert.equal(r.ignored, 2);
+    assert.equal(r.unreadable, 0);
+    writeFileSync(join(t.home, '.config/ai-digest/history-ignore'), '*\n');
+    const lines = [];
+    const off = await findHistory({ query: 'zebrafont', env: t.env, home: t.home, now: NOW, out: join(t.home, 'm2'), log: (l) => lines.push(l) });
+    assert.equal(off.off, true);
+    assert.equal(off.written.length, 0);
+    assert.match(lines.join('\n'), /探さない設定/);
+    assert.equal(existsSync(join(t.home, 'm2')), false);
+  } finally {
+    t.cleanup();
+  }
+});
+
+const runHist = (args, { home, env }) =>
+  new Promise((resolve) => {
+    const e = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, ...env };
+    execFile(process.execPath, [HIST, ...args], { env: e, cwd: home }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, out: stdout + stderr }));
+  });
+
+test('履歴を探す道具: 読めない会話があれば 3 で終わる。古い探し物は 10 回分だけ残し、ほかの物は消さない。使い方の誤りは 2', async () => {
+  const t = histSetup();
+  try {
+    const base = join(t.home, '.ai-digest-skill/history');
+    for (let i = 0; i < 12; i++) mkdirSync(join(base, `2026-01-${String(i + 1).padStart(2, '0')}T00-00-00-000Z`), { recursive: true });
+    mkdirSync(join(base, 'keep-me'));
+    const r = await runHist(['--query', 'zebrafont 書体', '--limit', '2'], t);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, /当たった会話: \d+ 件/);
+    assert.match(r.out, /読めなかった物: 1 件/);
+    assert.doesNotMatch(r.out, /k{30}/);
+    const left = readdirSync(base);
+    assert.ok(left.includes('keep-me'));
+    assert.equal(left.filter((n) => /^\d{4}-/.test(n)).length, 10);
+    assert.ok(!left.includes('2026-01-01T00-00-00-000Z'));
+    assert.equal((await runHist([], t)).code, 2);
+    assert.equal((await runHist(['--query', 'zebrafont', '--bogus'], t)).code, 2);
+    assert.equal((await runHist(['--query', 'x'], t)).code, 2); // 2 文字未満
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('履歴を探す: 短い英数字の言葉は単語の所だけ当てる（画像のデータの中の偶然を拾わない）。長い言葉は語の中でも当てる', () => {
+  const [eg2] = byteRes(['eg2']);
+  for (const s of ['使う eg2 は速い', '\\neg2 の話', 'EG2-Transcribe', '(eg2)', 'eg2']) assert.equal(hasWord(s, eg2), true, s);
+  for (const s of ['iVBORw0KGgoAAAANSUhEUgAAeg2BBx', 'AAA+eg2/BBB', 'leg2', 'eg2demo']) assert.equal(hasWord(s, eg2), false, s);
+  const [long] = byteRes(['embeddinggemma']);
+  assert.equal(hasWord('NewEmbeddingGemma2', long), true);
+  const [ja] = byteRes(['文字起こし']);
+  assert.equal(hasWord(Buffer.from('音声の文字起こしの道具').toString('latin1'), ja), true);
+});
+
+test('履歴を探す: URL は外から開ける物だけ。鍵のような値は伏せる。長い発言は当たりの前後だけ', () => {
+  assert.equal(publicUrl('https://example.com/a).'), 'https://example.com/a');
+  assert.equal(publicUrl('https://en.wikipedia.org/wiki/Foo_(bar)'), 'https://en.wikipedia.org/wiki/Foo_(bar)');
+  for (const u of ['http://localhost:3000/', 'http://127.0.0.1/x', 'http://192.168.1.2/', 'http://$h:3900/', 'https://user:pass@example.com/', 'ftp://example.com/', 'http://printer.local/'])
+    assert.equal(publicUrl(u), '', u);
+  assert.equal(publicUrl('https://example.com/f?token=abc&x=1'), 'https://example.com/f?token=%3C%E4%BC%8F%E3%81%9B%E3%81%9F%3E&x=1');
+  const masked = maskSecrets(`a ${SECRET} b ghp_${'g'.repeat(36)} token=${'z'.repeat(20)} task-runner-is-a-word`);
+  assert.doesNotMatch(masked, /k{30}|g{36}|z{20}/);
+  assert.match(masked, /task-runner-is-a-word/);
+  const long = `${'あ'.repeat(3000)} zebrafont が大事 ${'い'.repeat(3000)}`;
+  const ex = excerpt(long, ['zebrafont']);
+  assert.ok(ex.length <= 1600 && ex.includes('zebrafont が大事'));
+});
+
+test('履歴を探す道具: ホームに書けない時（Codex のサンドボックスなど）は、一時の置き場にメモを書く', async () => {
+  const t = histSetup();
+  try {
+    const locked = join(t.home, '.ai-digest-skill');
+    mkdirSync(locked);
+    chmodSync(locked, 0o500);
+    const tmp = join(t.home, 'tmp');
+    mkdirSync(tmp);
+    const r = await runHist(['--query', 'zebrafont', '--limit', '1'], { home: t.home, env: { ...t.env, TMPDIR: tmp } });
+    assert.equal(r.code, 3, r.out); // 形の違う記録が 1 つあるので 3
+    assert.match(r.out, /一時の置き場に書いた/);
+    const runs = readdirSync(join(tmp, 'ai-digest-history'));
+    assert.equal(runs.length, 1);
+    assert.equal(readdirSync(join(tmp, 'ai-digest-history', runs[0])).filter((n) => n.endsWith('.md')).length, 2); // 1 件と、この会話
+  } finally {
+    chmodSync(join(t.home, '.ai-digest-skill'), 0o700);
+    t.cleanup();
+  }
+});
+
+test('履歴を探す: Codex の中で動かした時は Codex の会話を外す。両方の ID が環境にあれば両方外して、そう書く', async () => {
+  const t = histSetup();
+  try {
+    const codexOnly = { ...t.env, CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: 'dddd4444-0000-0000-0000-000000000004' };
+    const lines = [];
+    const r = await findHistory({ query: 'zebrafont', env: codexOnly, home: t.home, now: NOW, out: join(t.home, 'm1'), log: (l) => lines.push(l) });
+    assert.ok(r.written.every((p) => !p.includes('codex')));
+    assert.ok(r.written.some((p) => p.includes('000000000003'))); // Claude Code の会話は、この会話ではない
+    assert.ok(lines.includes('この会話（Codex）: 言葉は当たったが、いま読めているので外した'));
+    const both = { ...t.env, CODEX_THREAD_ID: 'dddd4444-0000-0000-0000-000000000004' };
+    const lines2 = [];
+    const r2 = await findHistory({ query: 'zebrafont', env: both, home: t.home, now: NOW, out: join(t.home, 'm2'), log: (l) => lines2.push(l) });
+    assert.ok(r2.written.every((p) => !p.includes('codex') && !p.includes('000000000003')));
+    assert.match(lines2.join('\n'), /両方の会話の ID が環境にあった/);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('履歴を探す: 道具の記録の形が変わって、どの会話からも発言が取れない時は、見つからないで済ませず 3 にする', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'aid-hist-'));
+  try {
+    const proj = join(home, 'claude', 'projects', '-w');
+    mkdirSync(proj, { recursive: true });
+    for (let i = 0; i < 3; i++) writeFileSync(join(proj, `f${i}.jsonl`), J({ type: 'human', text: `zebrafont ${i}` }) + '\n'); // 知らない形
+    const lines = [];
+    const r = await findHistory({ query: 'zebrafont', env: { AI_DIGEST_CLAUDE_DIR: join(home, 'claude'), AI_DIGEST_CODEX_DIR: join(home, 'codex') }, home, now: NOW, out: join(home, 'm'), log: (l) => lines.push(l) });
+    assert.equal(r.written.length, 0);
+    assert.equal(r.unreadable, 1);
+    assert.match(lines.join('\n'), /Claude Code の会話 3 件から、発言が 1 つも取れなかった/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

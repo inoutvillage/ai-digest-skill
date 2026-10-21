@@ -20,3 +20,24 @@ export function registeredKey({ env = process.env, home = homedir() } = {}) {
     return '';
   }
 }
+
+// 会話の記録から抜き出す時に伏せる、よくある鍵・合言葉の形（記事に入らないよう、AI が読む前に消す）
+const SECRET_RES = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '<伏せた>'],
+  [/\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}/g, '<伏せた>'],
+  [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}/g, '<伏せた>'],
+  [/\bgithub[_]pat_[A-Za-z0-9_]{30,}/g, '<伏せた>'], // [_] は、この行そのものが鍵と見なされないため
+  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/g, '<伏せた>'],
+  [/\bAKIA[0-9A-Z]{16}\b/g, '<伏せた>'],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/g, '<伏せた>'],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '<伏せた>'],
+  [/\bvercel_blob_rw_[A-Za-z0-9_]{10,}/g, '<伏せた>'],
+  [/\b((?:api[_-]?key|secret|password|passwd|token|access[_-]?key)["']?\s*[:=]\s*["']?)[^\s"',;]{8,}/gi, '$1<伏せた>'],
+];
+
+/** よくある形の鍵・合言葉を伏せる（会話の記録の抜き出しに使う） */
+export function maskSecrets(text) {
+  let t = String(text ?? '');
+  for (const [re, to] of SECRET_RES) t = t.replace(re, to);
+  return t;
+}
