@@ -541,7 +541,7 @@ test('入れる道具: 前のインストーラーが置き場の中に残した
 });
 
 // ---- 履歴を探す道具（find-history.mjs）。本物の会話の記録は読まない（作った記録だけ） ----
-import { byteRes, excerpt, findHistory, hasWord, publicUrl } from '../skills/ai-digest-post/scripts/find-history.mjs';
+import { byteRes, excerpt, findHistory, hasWord, IgnoreUnreadable, publicUrl } from '../skills/ai-digest-post/scripts/find-history.mjs';
 import { maskSecrets } from '../skills/ai-digest-post/scripts/mask.mjs';
 
 const HIST = join(SKILL, 'scripts/find-history.mjs');
@@ -769,5 +769,84 @@ test('履歴を探す: 道具の記録の形が変わって、どの会話から
     assert.match(lines.join('\n'), /Claude Code の会話 3 件から、発言が 1 つも取れなかった/);
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+/** 1 つの会話（Claude Code）だけの手元。行は fromClaude が読む形 */
+function oneSession(lines) {
+  const home = mkdtempSync(join(tmpdir(), 'aid-hist-'));
+  const proj = join(home, 'claude', 'projects', '-w');
+  mkdirSync(proj, { recursive: true });
+  writeFileSync(join(proj, 'ffff6666-0000-0000-0000-000000000006.jsonl'), lines.map((l) => J(l)).join('\n') + '\n');
+  return { home, env: { AI_DIGEST_CLAUDE_DIR: join(home, 'claude'), AI_DIGEST_CODEX_DIR: join(home, 'codex') }, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+}
+const cuser = (text, d = 3) => ({ parentUuid: null, isSidechain: false, type: 'user', message: { role: 'user', content: text }, cwd: '/w', timestamp: ago(d) });
+const cai = (content, d = 3) => ({ parentUuid: 'p', isSidechain: false, message: { model: 'm', id: 'msg', type: 'message', role: 'assistant', content }, type: 'assistant', timestamp: ago(d) });
+
+test('伏せる: 名前の途中に KEY・SECRET・TOKEN・PASSWORD がある環境変数の値・終わりの印の無い秘密鍵・送れてしまう URL', () => {
+  const v = 'Q'.repeat(24);
+  const t = maskSecrets([`export TYPESAFE_API_KEY=${v}`, `AWS_SECRET_ACCESS_KEY=${v}`, `DB_PASSWORD: "${v}"`, `"apiKey": "${v}"`, `GITHUB_TOKEN=${v}`].join('\n'));
+  assert.doesNotMatch(t, /Q{24}/);
+  assert.match(t, /export TYPESAFE_API_KEY=<伏せた>/);
+  const cut = `前の文 -----BEGIN PRIVATE KEY-----\n${'PEMBODY0'.repeat(8)}\n${'PEMBODY1'.repeat(8)}`;
+  assert.doesNotMatch(maskSecrets(cut), /PEMBODY/);
+  assert.match(maskSecrets(cut), /^前の文 <伏せた>/);
+  for (const url of ['https://hooks.slack.com/services/T0/B0/HOOKSECRET', 'https://discord.com/api/webhooks/1/HOOKSECRET', 'https://api.vercel.com/v1/integrations/deploy/prj_1/HOOKSECRET'])
+    assert.doesNotMatch(maskSecrets(`url ${url} end`), /HOOKSECRET/, url);
+});
+
+test('履歴を探す: 長い発言の中の秘密鍵は、抜き出しで終わりの印が切れても伏せたまま。送れてしまう URL は一覧に出さない', async () => {
+  const body = Array.from({ length: 30 }, (_, i) => `PEMBODY${String(i).padStart(2, '0')}`.repeat(8)).join('\n');
+  const long = `${'前置き。'.repeat(800)} zebrafont の鍵を貼る\n-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----\n${'後書き。'.repeat(800)}`;
+  const t = oneSession([cuser('zebrafont の設定を見て'), cai([{ type: 'text', text: long }, { type: 'tool_use', id: 'w', name: 'WebFetch', input: { url: 'https://hooks.slack.com/services/T0/B0/HOOKSECRET', prompt: 'p' } }])]);
+  try {
+    const r = await findHistory({ query: 'zebrafont', env: t.env, home: t.home, now: NOW, out: join(t.home, 'm'), log: () => {} });
+    const memo = readFileSync(r.written[0], 'utf-8');
+    assert.doesNotMatch(memo, /PEMBODY/);
+    assert.doesNotMatch(memo, /HOOKSECRET|hooks\.slack/);
+    assert.match(memo, /zebrafont の鍵を貼る/);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('履歴を探す: 「調べます」の後の調べた結果（話題の言葉を含まない最後の答え）もメモに入れる', async () => {
+  const t = oneSession([
+    cuser('zebrafont の値段を調べて'),
+    cai([{ type: 'text', text: '調べます。' }]),
+    cai([{ type: 'tool_use', id: 'w', name: 'WebFetch', input: { url: 'https://shop.example.com/price', prompt: 'p' } }]),
+    { parentUuid: 'y', isSidechain: false, type: 'user', message: { role: 'user', content: [{ tool_use_id: 'w', type: 'tool_result', content: '道具の出力' }] }, timestamp: ago(3) },
+    cai([{ type: 'text', text: '確認結果: 月額 500 円でした。FINALANSWER' }]),
+    cuser('ありがとう。別の話をしよう'),
+    cai([{ type: 'text', text: '別の話の答え OTHERTOPIC' }]),
+  ]);
+  try {
+    const r = await findHistory({ query: 'zebrafont', env: t.env, home: t.home, now: NOW, out: join(t.home, 'm'), log: () => {} });
+    const memo = readFileSync(r.written[0], 'utf-8');
+    assert.match(memo, /調べます/);
+    assert.match(memo, /確認結果: 月額 500 円でした。FINALANSWER/);
+    assert.match(memo, /https:\/\/shop\.example\.com\/price/);
+    assert.doesNotMatch(memo, /OTHERTOPIC/);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('履歴を探す: 探さない場所の設定があるのに読めない時は、全部を探さずに止める（道具は 4 で終わる）', { skip: process.getuid?.() === 0 ? 'root では読めてしまう' : false }, async () => {
+  const t = histSetup();
+  const f = join(t.home, '.config/ai-digest/history-ignore');
+  try {
+    mkdirSync(join(t.home, '.config/ai-digest'), { recursive: true });
+    writeFileSync(f, '*\n');
+    chmodSync(f, 0o000);
+    await assert.rejects(findHistory({ query: 'zebrafont', env: t.env, home: t.home, now: NOW, out: join(t.home, 'm'), log: () => {} }), IgnoreUnreadable);
+    assert.equal(existsSync(join(t.home, 'm')), false);
+    const r = await runHist(['--query', 'zebrafont'], t);
+    assert.equal(r.code, 4, r.out);
+    assert.match(r.out, /探さない場所の設定.*読めない/);
+    assert.equal(existsSync(join(t.home, '.ai-digest-skill/history')), false);
+  } finally {
+    chmodSync(f, 0o600);
+    t.cleanup();
   }
 });

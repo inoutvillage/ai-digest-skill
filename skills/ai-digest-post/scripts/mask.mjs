@@ -23,7 +23,8 @@ export function registeredKey({ env = process.env, home = homedir() } = {}) {
 
 // 会話の記録から抜き出す時に伏せる、よくある鍵・合言葉の形（記事に入らないよう、AI が読む前に消す）
 const SECRET_RES = [
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '<伏せた>'],
+  // 秘密鍵は終わりの印まで。終わりの印が無い（途中で切れた）時は、続く鍵の文字を全部
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9+/=\s]*)/g, '<伏せた>'],
   [/\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}/g, '<伏せた>'],
   [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}/g, '<伏せた>'],
   [/\bgithub[_]pat_[A-Za-z0-9_]{30,}/g, '<伏せた>'], // [_] は、この行そのものが鍵と見なされないため
@@ -32,7 +33,12 @@ const SECRET_RES = [
   [/\bAIza[0-9A-Za-z_-]{35}\b/g, '<伏せた>'],
   [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '<伏せた>'],
   [/\bvercel_blob_rw_[A-Za-z0-9_]{10,}/g, '<伏せた>'],
-  [/\b((?:api[_-]?key|secret|password|passwd|token|access[_-]?key)["']?\s*[:=]\s*["']?)[^\s"',;]{8,}/gi, '$1<伏せた>'],
+  // 名前に KEY・SECRET・TOKEN・PASSWORD などを含む値（TYPESAFE_API_KEY=… や AWS_SECRET_ACCESS_KEY=…、"apiKey": "…" も）
+  [/\b([A-Za-z0-9_]*(?:api[_-]?key|secret|password|passwd|passphrase|token|access[_-]?key|private[_-]?key|credential)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?)[^\s"',;]{8,}/gi, '$1<伏せた>'],
+  // 知っているだけで送れてしまう URL（Slack・Discord の受け口、Vercel のデプロイフック）
+  [/https:\/\/hooks\.slack\.com\/services\/[^\s"'<>)]+/g, '<伏せた URL>'],
+  [/https:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/[^\s"'<>)]+/g, '<伏せた URL>'],
+  [/https:\/\/api\.vercel\.com\/v1\/integrations\/deploy\/[^\s"'<>)]+/g, '<伏せた URL>'],
 ];
 
 /** よくある形の鍵・合言葉を伏せる（会話の記録の抜き出しに使う） */

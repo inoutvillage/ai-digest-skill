@@ -14,7 +14,8 @@
 // 読めなかった会話（壊れている・開けない）は数えて出し、終わりの番号を 3 にする（黙って飛ばさない）。
 //   道具ごとに、読んだ会話のどれからも発言が取れなければ「記録の形が変わったかもしれない」と出して 3 にする。
 //   発言の無い会話（付けたしの記録だけ・終わりの命令だけ）は、数えて出すが誤りにはしない。
-// 終わりの番号: 0 探し終えた（見つからなかった時も）・2 使い方の誤り・3 探したが読めなかった会話がある
+// 終わりの番号: 0 探し終えた（見つからなかった時も）・2 使い方の誤り・3 探したが読めなかった会話がある・
+//   4 探さない場所の設定（history-ignore）があるのに読めないので、探さずに止めた（設定を無視して全部を探さない）
 // 外には何も送らない。読むのは利用者の PC のファイルだけ。
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -39,16 +40,21 @@ export function roots(env = process.env, home = homedir()) {
   ];
 }
 
+export class IgnoreUnreadable extends Error {}
+
+/** 探さない場所の設定。無い時だけ「全部探す」。あるのに読めない時は止める（利用者が決めた除外を黙って無視しない） */
 export function readIgnore(home = homedir()) {
-  let rows = [];
+  let text;
   try {
-    rows = readFileSync(join(home, '.config', 'ai-digest', 'history-ignore'), 'utf-8')
-      .split(/\r?\n/)
-      .map((l) => l.replace(/#.*/, '').trim())
-      .filter(Boolean);
-  } catch {
-    // 無ければ全部探す
+    text = readFileSync(join(home, '.config', 'ai-digest', 'history-ignore'), 'utf-8');
+  } catch (e) {
+    if (e?.code === 'ENOENT') return { all: false, pats: [] };
+    throw new IgnoreUnreadable(`探さない場所の設定（~/.config/ai-digest/history-ignore）を読めない（${e?.code ?? e}）。履歴は探さずに止めた。読めるように直すか、要らなければ消す`);
   }
+  const rows = text
+    .split(/\r?\n/)
+    .map((l) => l.replace(/#.*/, '').trim())
+    .filter(Boolean);
   return { all: rows.includes('*'), pats: rows.filter((r) => r !== '*') };
 }
 
@@ -311,8 +317,9 @@ const SHAPE = {
 };
 
 /** 会話 1 つを読む。発言・URL と検索した言葉（どのやりとりで出たか）・題・作業の場所・始めの時刻。
- *  やりとり（turn）は、利用者の 1 つの問いと、次の問いまでの答え・道具の使用 */
-export function readSession(path, tool) {
+ *  やりとり（turn）は、利用者の 1 つの問いと、次の問いまでの答え・道具の使用。
+ *  clean で、発言・URL・検索した言葉・題を読んだ時に伏せる（抜き出しや省略で鍵の終わりの印が切れる前に） */
+export function readSession(path, tool, clean = (t) => t) {
   const { pick, parse } = SHAPE[tool];
   const s = { tool, path, cwd: '', started: '', title: '', compacted: false, msgs: [], urls: new Map(), queries: new Map(), lines: 0, junk: 0, tried: 0, bad: 0, turn: 0 };
   const st = eachLine(path, pick, (l) => {
@@ -328,14 +335,21 @@ export function readSession(path, tool) {
     if (!r) return;
     if (r.cwd && !s.cwd) s.cwd = String(r.cwd);
     if (r.ts && !s.started) s.started = String(r.ts);
-    if (r.title && !s.title) s.title = r.title.trim();
+    if (r.title && !s.title) s.title = clean(r.title.trim());
     if (r.compacted) s.compacted = true;
     for (const m of r.msgs ?? []) {
       if (m.role === 'user') s.turn++;
-      s.msgs.push({ ...m, ts: r.ts, turn: s.turn });
+      s.msgs.push({ ...m, text: clean(m.text), ts: r.ts, turn: s.turn });
     }
-    for (const u of r.urls ?? []) if (!s.urls.has(u)) s.urls.set(u, s.turn);
-    for (const q of r.queries ?? []) if (!s.queries.has(q)) s.queries.set(q, s.turn);
+    for (const raw of r.urls ?? []) {
+      const u = clean(raw);
+      if (u.startsWith('<伏せた')) continue; // 伏せた URL（送れてしまう受け口など）は一覧に出さない
+      if (!s.urls.has(u)) s.urls.set(u, s.turn);
+    }
+    for (const raw of r.queries ?? []) {
+      const q = clean(raw);
+      if (!s.queries.has(q)) s.queries.set(q, s.turn);
+    }
   });
   s.lines = st.lines;
   s.junk = st.junk;
@@ -440,8 +454,11 @@ function askOf(s, i) {
 /** 1 行で見せる時は、道具が付けた印（<teammate-message …> など）を外す */
 const plain = (t) => String(t ?? '').replace(/<\/?[a-z][a-z_-]*(\s[^>]{0,300})?>/gi, ' ');
 
-/** 関係する問いと答えだけのメモ。重い発言から順に、問い（前の利用者の言葉）か答え（次の AI の言葉）を添えて入れ、時刻の順に並べる */
+/** 関係する問いと答えだけのメモ。重い発言から順に、問い（そのやりとりの利用者の言葉）と答え（次の AI の言葉と、
+ *  そのやりとりの最後の AI の言葉。「調べます」の後の調べた結果は、話題の言葉を含まないことが多い）を添えて入れ、時刻の順に並べる */
 export function memo(s, words, sc, { note = '' } = {}) {
+  const lastAi = new Map(); // やりとりごとの、最後の AI の言葉
+  s.msgs.forEach((m, i) => m.role === 'assistant' && lastAi.set(m.turn, i));
   const order = [...sc.rel].sort((a, b) => sc.msgWeight.get(b) - sc.msgWeight.get(a) || a - b);
   const pick = new Set();
   let size = 0;
@@ -466,6 +483,7 @@ export function memo(s, words, sc, { note = '' } = {}) {
       const q = askOf(s, i);
       if (q) add(s.msgs.indexOf(q));
     }
+    if (m.role !== 'summary' && lastAi.has(m.turn)) add(lastAi.get(m.turn));
   }
   const first = sc.rel.length ? askOf(s, sc.rel[0]) : null;
   const urls = sc.urls.slice(0, URL_MAX);
@@ -499,7 +517,8 @@ export async function findHistory({ query, days = 365, limit = 5, out, env = pro
   if (!words.length) throw new Error('--query に探す言葉（2 文字以上）を 1 つ以上');
   if (!(days > 0) || !(limit > 0)) throw new Error('--days と --limit は 1 以上の数');
   const key = registeredKey({ env, home });
-  const say = (t) => log(scrub(maskSecrets(t), key));
+  const clean = (t) => scrub(maskSecrets(t), key);
+  const say = (t) => log(clean(t));
   const ig = readIgnore(home);
   if (ig.all) {
     say('履歴は探さない設定（~/.config/ai-digest/history-ignore に * の行がある）。探さなかった');
@@ -544,7 +563,7 @@ export async function findHistory({ query, days = 365, limit = 5, out, env = pro
   for (const f of hitFiles) {
     let s;
     try {
-      s = readSession(f.path, f.tool);
+      s = readSession(f.path, f.tool, clean);
     } catch {
       unreadable.push(`${f.path}（開けない）`);
       continue;
@@ -649,6 +668,10 @@ if (process.argv[1] && basename(process.argv[1]) === 'find-history.mjs') {
     const r = await findHistory({ query: val('--query'), days: Number(val('--days') ?? 365), limit: Number(val('--limit') ?? 5), out: val('--out') });
     process.exit(r.unreadable ? 3 : 0);
   } catch (e) {
+    if (e instanceof IgnoreUnreadable) {
+      console.error(`止めた: ${e.message}`);
+      process.exit(4);
+    }
     console.error(`止めた: ${scrub(maskSecrets(String(e?.message ?? e)))}`);
     console.error('使い方: node find-history.mjs --query "言葉 言葉 …" [--days 365] [--limit 5] [--out <フォルダ>]');
     process.exit(2);
