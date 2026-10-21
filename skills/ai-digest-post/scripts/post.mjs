@@ -1,0 +1,171 @@
+#!/usr/bin/env node
+// ai-digest に記事を送る・鍵を確かめる（投稿する人の手元で使う。要る物は Node.js 22 以上だけ）。
+//   node post.mjs --check                                   … 鍵と URL を確かめる（何も送らない）
+//   node post.mjs <記事.md> [--image <絵>]... [--publish]   … 送る（--publish は送った後に公開。publisher / admin だけ）
+// URL と鍵は、先に見つかった物を使う: 環境変数 AI_DIGEST_API_URL / AI_DIGEST_API_KEY → ~/.config/ai-digest/url・key
+// （登録のしかたは ../references/setup.md）。鍵は画面に出さない。--url / --key の引数も使えるが、鍵は履歴に残るので勧めない。
+// サイトの側の scripts/post.mjs はこのファイルを読む（正はここ）。
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
+import { scrub } from './mask.mjs';
+
+export { scrub };
+
+const SETUP = 'このスキルのフォルダの references/setup.md';
+const KINDS = ['articles', 'digests'];
+/** 鍵の形（運営が発行する鍵は aid_ と 16 進 48 字）。違えば通信の前に止める（改行などが混ざった鍵は、通信の例外文に全文が載るため） */
+export const KEY_RE = /^aid_[0-9a-f]{48}$/;
+
+// 画面に出す物は全部ここを通す（URL や引数の入れ間違いで鍵が出ないように）。鍵は設定を読んだ所で覚える
+let knownKey = '';
+const out = (...a) => console.log(...a.map((x) => scrub(x, knownKey)));
+const err = (...a) => console.error(...a.map((x) => scrub(x, knownKey)));
+
+/** fetch の包み。通信の失敗は、元の例外文（鍵を含みうる）を出さずに、理由の符号だけの例外にする */
+async function request(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    throw new Error(`通信できない（${e?.cause?.code ?? e?.code ?? e?.name ?? 'エラー'}）`);
+  }
+}
+
+export const configDir = (home = homedir()) => join(home, '.config', 'ai-digest');
+
+const readTrim = (file) => {
+  try {
+    return readFileSync(file, 'utf-8').trim();
+  } catch {
+    return '';
+  }
+};
+
+/** URL と鍵を探す。どこで見つけたか（from）も返す。鍵の値は表示に使わない */
+export function resolveConfig({ args = {}, env = process.env, home = homedir() } = {}) {
+  const dir = configDir(home);
+  const fileUrl = readTrim(join(dir, 'url'));
+  const fileKey = readTrim(join(dir, 'key'));
+  const url = (args.url || env.AI_DIGEST_API_URL || fileUrl || '').trim().replace(/\/+$/, '');
+  const key = (args.key || env.AI_DIGEST_API_KEY || fileKey || '').trim();
+  const urlFrom = args.url ? '--url' : env.AI_DIGEST_API_URL ? '環境変数 AI_DIGEST_API_URL' : fileUrl ? join(dir, 'url') : '';
+  const keyFrom = args.key ? '--key' : env.AI_DIGEST_API_KEY ? '環境変数 AI_DIGEST_API_KEY' : fileKey ? join(dir, 'key') : '';
+  return { url, key, urlFrom, keyFrom };
+}
+
+export function parseArgs(argv) {
+  const opt = { file: '', images: [], publish: false, check: false, kind: 'articles', url: '', key: '', errors: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--image') opt.images.push(argv[++i] ?? '');
+    else if (a === '--publish') opt.publish = true;
+    else if (a === '--check') opt.check = true;
+    else if (a === '--kind') opt.kind = argv[++i] ?? '';
+    else if (a === '--url') opt.url = argv[++i] ?? '';
+    else if (a === '--key') opt.key = argv[++i] ?? '';
+    else if (!opt.file && !a.startsWith('--')) opt.file = a;
+    else opt.errors.push(`知らない引数: ${a}`);
+  }
+  if (!KINDS.includes(opt.kind)) opt.errors.push(`--kind は ${KINDS.join(' か ')}`);
+  return opt;
+}
+
+const USAGE = '使い方: node post.mjs --check ／ node post.mjs <記事.md> [--image <絵>]... [--publish]';
+const ROLE_CAN = { writer: '下書きまで送れる。公開は運営が確かめてから', publisher: '自分の記事は確かめなしで公開できる', admin: '誰の記事でも公開・書き換えできる' };
+
+async function check(cfg, headers) {
+  let r;
+  try {
+    r = await request(`${cfg.url}/api/articles`, { headers });
+  } catch (e) {
+    err(`サイトにつながらない: ${cfg.url}（${e.message}）。URL を確かめる（${cfg.urlFrom}）`);
+    return 1;
+  }
+  const j = await r.json().catch(() => null);
+  if (r.status === 401) {
+    err(`鍵が違うか、失効している（鍵の場所: ${cfg.keyFrom}）。写し間違いが無いかを見て、だめなら運営に連絡する`);
+    return 1;
+  }
+  if (!r.ok || !j?.ok) {
+    err(`確かめられなかった: HTTP ${r.status}（URL が違う・サイトが止まっている など）`);
+    return 1;
+  }
+  const role = j.me?.role ?? '?';
+  out(`鍵は有効です: ${j.me?.name ?? '?'}（${role}・${ROLE_CAN[role] ?? ''}）。自分の記事 ${Array.isArray(j.articles) ? j.articles.length : 0} 本`);
+  out(`URL: ${cfg.url}（${cfg.urlFrom}）・鍵の場所: ${cfg.keyFrom}`);
+  return 0;
+}
+
+export async function main(argv) {
+  try {
+    return await run(argv);
+  } catch (e) {
+    // 思いがけない失敗でも、鍵を含みうる文はそのまま出さない（err が消す）
+    err(`失敗: ${e?.message ?? e}`);
+    return 1;
+  }
+}
+
+async function run(argv) {
+  const opt = parseArgs(argv);
+  const cfg = resolveConfig({ args: opt });
+  knownKey = cfg.key; // ここから先の表示は、この鍵を消してから出す（引数の誤りの表示も）
+  if (opt.errors.length) {
+    for (const e of opt.errors) err(e);
+    err(USAGE);
+    return 2;
+  }
+  if (opt.key) err(`注意: --key で渡した鍵はシェルの履歴に残る。次からは端末に登録した鍵を使う（${SETUP}）`);
+  if (!cfg.url || !cfg.key) {
+    const missing = [!cfg.url && 'サイトの URL', !cfg.key && '投稿の鍵'].filter(Boolean).join(' と ');
+    err(`${missing}が見つからない（環境変数 AI_DIGEST_API_URL・AI_DIGEST_API_KEY も ${configDir()} の url・key も無い）。`);
+    err(`登録のしかた: ${SETUP}。運営から受け取った URL と鍵を、利用者が自分の端末に登録する（AI との会話には貼らない）`);
+    return 2;
+  }
+  if (!/^https:\/\//.test(cfg.url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cfg.url)) {
+    err(`URL は https:// で始める（今: ${cfg.url}・${cfg.urlFrom}）`);
+    return 2;
+  }
+  if (!KEY_RE.test(cfg.key)) {
+    err(`鍵の形が違う（aid_ で始まる 52 文字の英数字のはず）。空白や改行が混ざっていないかを見て、登録し直す（${SETUP}）。鍵の場所: ${cfg.keyFrom}。鍵の中身は表示しない`);
+    return 2;
+  }
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}` };
+  if (opt.check) return check(cfg, headers);
+  if (!opt.file) {
+    err(USAGE);
+    return 2;
+  }
+
+  const markdown = readFileSync(opt.file, 'utf-8');
+  const body = { markdown, kind: opt.kind };
+  if (opt.images.length) body.images = opt.images.map((f) => ({ name: basename(f), base64: readFileSync(f).toString('base64') }));
+  let r;
+  try {
+    r = await request(`${cfg.url}/api/articles`, { method: 'POST', headers, body: JSON.stringify(body) });
+  } catch (e) {
+    err(`送れなかった: ${cfg.url}（${e.message}）。node post.mjs --check で確かめる`);
+    return 1;
+  }
+  const j = await r.json().catch(() => ({}));
+  out(`投稿: HTTP ${r.status}`, JSON.stringify(j));
+  if (r.status === 401) err(`鍵が違うか、失効している（${cfg.keyFrom}）。node post.mjs --check で確かめる`);
+  if (!r.ok) return 1;
+  if (opt.publish) {
+    let r2;
+    try {
+      r2 = await request(`${cfg.url}/api/articles/publish`, { method: 'POST', headers, body: JSON.stringify({ slug: j.slug, kind: opt.kind }) }); // 投稿の返事にある解析済みの slug
+    } catch (e) {
+      err(`公開にできなかった（下書きは送れている）: ${e.message}`);
+      return 1;
+    }
+    const j2 = await r2.json().catch(() => ({}));
+    out(`公開: HTTP ${r2.status}`, JSON.stringify(j2));
+    if (r2.status === 403) err('公開できるのは publisher（自分の記事）と admin の鍵だけ。writer の鍵なら下書きのまま運営の確かめを待つ');
+    if (!r2.ok) return 1;
+  }
+  return 0;
+}
+
+// node post.mjs …（サイトの側の scripts/post.mjs から読まれた時も、名前が post.mjs なので動く）
+if (process.argv[1] && basename(process.argv[1]) === 'post.mjs') process.exit(await main(process.argv.slice(2)));
