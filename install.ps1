@@ -252,9 +252,15 @@ if (-not $newKeyGiven) {
   }
 }
 
+# 次にすること（登録済みの物は出さない）
+$urlFile = Join-Path $HomeDir '.config\ai-digest\url'
+$needKey = -not ($env:AI_DIGEST_API_KEY -or ((Test-Path -LiteralPath $keyFile) -and (Get-Item -LiteralPath $keyFile).Length -gt 0))
+$needUrl = -not ($env:AI_DIGEST_API_URL -or ((Test-Path -LiteralPath $urlFile) -and (Get-Item -LiteralPath $urlFile).Length -gt 0))
 Write-Host '次にすること:'
 if ($keyMade) { Write-Host '  - 上に出した1行（鍵のハッシュ値）を運営に送る。運営が登録すると投稿できる' }
-Write-Host '  - 運営から受け取ったサイトの URL を登録する: references\setup.md の「2. サイトの URL を登録する」（入れた先のフォルダの中）'
+if ($needKey) { Write-Host ('  - 投稿用の鍵を作る（node "{0}" new <鍵の名前>）か、運営から受け取った鍵を references\setup.md の手順で登録する' -f $instKey) }
+if ($needUrl) { Write-Host '  - 運営から受け取ったサイトの URL を登録する: references\setup.md の「2. サイトの URL を登録する」（入れた先のフォルダの中）' }
+if (-not $keyMade -and -not $needKey -and -not $needUrl) { Write-Host '  - なし（投稿用の鍵とサイトの URL は登録済み）' }
 Write-Host ('確かめ: node "{0}\ai-digest-post\scripts\post.mjs" --check' -f $targets[0])
 if (-not $nodeOk) { exit 3 }
 if ($extrasFailed) { exit 4 }

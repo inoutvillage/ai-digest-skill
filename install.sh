@@ -265,9 +265,14 @@ if [ "$newkey_given" != 1 ]; then
   fi
 fi
 
+# 次にすること（登録済みの物は出さない）
+need_key=0; { [ -n "${AI_DIGEST_API_KEY:-}" ] || [ -s "$key_file" ]; } || need_key=1
+need_url=0; { [ -n "${AI_DIGEST_API_URL:-}" ] || [ -s "$HOME/.config/ai-digest/url" ]; } || need_url=1
 echo "次にすること:"
 if [ "$key_made" = 1 ]; then echo "  - 上に出した1行（鍵のハッシュ値）を運営に送る。運営が登録すると投稿できる"; fi
-echo "  - 運営から受け取ったサイトの URL を登録する: references/setup.md の「2. サイトの URL を登録する」（入れた先のフォルダの中）"
+if [ "$need_key" = 1 ]; then echo "  - 投稿用の鍵を作る（node \"$inst_key\" new <鍵の名前>）か、運営から受け取った鍵を references/setup.md の手順で登録する"; fi
+if [ "$need_url" = 1 ]; then echo "  - 運営から受け取ったサイトの URL を登録する: references/setup.md の「2. サイトの URL を登録する」（入れた先のフォルダの中）"; fi
+if [ "$key_made" != 1 ] && [ "$need_key" = 0 ] && [ "$need_url" = 0 ]; then echo "  - なし（投稿用の鍵とサイトの URL は登録済み）"; fi
 echo "確かめ: node \"${targets[0]}/ai-digest-post/scripts/post.mjs\" --check"
 [ "$node_ok" = 1 ] || exit 3
 [ "$extras_failed" = 0 ] || exit 4

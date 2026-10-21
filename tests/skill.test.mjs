@@ -1115,3 +1115,22 @@ test('入れる道具: 鍵を作るかを聞く（Enter で作る・n で作ら�
     t.cleanup();
   }
 });
+
+test('入れる道具: 次にすることは、登録済みの物を出さない（鍵とサイトの URL が登録済みなら「なし」）', async () => {
+  const t = installSetup();
+  try {
+    const args = ['--no-extras', '--author-name', 'たなか'];
+    const empty = await installer({ home: t.home, args });
+    assert.match(empty.out, /投稿用の鍵を作る（node .*key\.mjs" new <鍵の名前>）か、運営から受け取った鍵/);
+    assert.match(empty.out, /サイトの URL を登録する/);
+    mkdirSync(join(t.home, '.config/ai-digest'), { recursive: true });
+    writeFileSync(join(t.home, '.config/ai-digest/url'), 'https://site.example');
+    const made = await installer({ home: t.home, args: [...args, '--new-key', 'tanaka'] });
+    assert.match(made.out, /上に出した1行（鍵のハッシュ値）を運営に送る/);
+    assert.doesNotMatch(made.out, /サイトの URL を登録する/);
+    const done = await installer({ home: t.home, args });
+    assert.match(done.out, /なし（投稿用の鍵とサイトの URL は登録済み）/);
+  } finally {
+    t.cleanup();
+  }
+});
