@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ai-digest の投稿スキル（ai-digest-post）を入れる。Mac・Linux・WSL 用（Windows は install.ps1）。
 #   bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras] [--author-name <投稿者名>]
+#                   [--new-key <鍵の名前>] [--replace-key]
 # 1. Node.js 22 以上があるかを見る。無ければ入れ方を案内する（スキルは入れる）
 # 2. スキルを、入っている方（Claude Code の ~/.claude と Codex の ~/.codex。両方なら両方）に写す。
 #    前の版は ~/.ai-digest-skill/backup/<claude か codex>/ に残す（スキルの置き場の外。置き場の中に残すと古い版も読み込まれる）
@@ -10,6 +11,9 @@
 # 4. 投稿者名（記事の下に「投稿者：<名前>」と表示される名前。サイトを読む人に見える）を聞く。登録済みなら Enter でそのまま。
 #    確かめと書き込みは post.mjs --set-name（~/.config/ai-digest/name）。--author-name で聞かずに決める（だめな名前なら入れる前に 2 で止める）。
 #    聞けない時は決めず、記事を書く時にスキルが聞く
+# 5. 投稿用の鍵を作るかを聞く（鍵はこのPCの ~/.config/ai-digest/key に置き、運営には鍵のハッシュ値の1行だけを送る。作るのは key.mjs）。
+#    もう鍵があれば、作り直すかを聞く（y/N）。--new-key で聞かずに作る（もう鍵がある時は --replace-key も要る。だめなら入れる前に 2 で止める）。
+#    聞けない時は作らず、記事を書く時にスキルが作る
 # 終わりの値: 0 済んだ／1 入れる先が無い／2 使い方の誤り／3 スキルは入れたが Node.js が要る／4 スキルは入れたが連携するスキルを入れられなかった
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,13 +29,16 @@ YOMIYASU_REPO="nanaism/yomiyasu";  YOMIYASU_REF="fbe02c93877d697cc53d9377b7a45dd
 
 backup_root="$HOME/.ai-digest-skill/backup"   # 前の版の置き場（スキルの置き場の外）
 
-usage() { echo "使い方: bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras] [--author-name <投稿者名>]" >&2; }
+usage() { echo "使い方: bash install.sh [--claude] [--codex] [--with-imozuru] [--with-yomiyasu] [--with-extras] [--no-extras] [--author-name <投稿者名>] [--new-key <鍵の名前>] [--replace-key]" >&2; }
 
 targets=()
 want_imozuru=""
 want_yomiyasu=""
 author_name=""
 author_given=0
+newkey_name=""
+newkey_given=0
+replace_key=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --claude) targets+=("$HOME/.claude/skills") ;;
@@ -42,6 +49,9 @@ while [ "$#" -gt 0 ]; do
     --no-extras) [ -n "$want_imozuru" ] || want_imozuru=n; [ -n "$want_yomiyasu" ] || want_yomiyasu=n ;;
     --author-name) [ "$#" -ge 2 ] || { usage; exit 2; }; author_name="$2"; author_given=1; shift ;;
     --author-name=*) author_name="${1#*=}"; author_given=1 ;;
+    --new-key) [ "$#" -ge 2 ] || { usage; exit 2; }; newkey_name="$2"; newkey_given=1; shift ;;
+    --new-key=*) newkey_name="${1#*=}"; newkey_given=1 ;;
+    --replace-key) replace_key=1 ;;
     *) usage; exit 2 ;;
   esac
   shift
@@ -80,6 +90,20 @@ if [ "$author_given" = 1 ]; then
     set_name "$author_name" || { echo "--author-name の名前を直して、もう一度実行する（スキルはまだ入れていない）" >&2; exit 2; }
   else
     echo "投稿者名: Node.js が無いので登録できない。Node.js を入れた後に --author-name を付けて実行し直すか、記事を書く時にスキルが聞く"
+  fi
+fi
+
+# 投稿用の鍵を作るのは key.mjs（鍵は表示せず、運営に送る1行＝鍵のハッシュ値を出す）
+key_file="$HOME/.config/ai-digest/key"
+key_name_file="$HOME/.config/ai-digest/key-name"
+key_made=0
+make_key() { "$node_bin" "$src/scripts/key.mjs" new "$@"; }
+if [ "$newkey_given" = 1 ]; then
+  if [ "$node_ok" = 1 ]; then
+    if make_key "$newkey_name" ${replace_key:+--replace}; then key_made=1
+    else echo "--new-key を直して、もう一度実行する（スキルはまだ入れていない。もう鍵があって作り直す時は --replace-key も付ける）" >&2; exit 2; fi
+  else
+    echo "投稿用の鍵: Node.js が無いので作れない。Node.js を入れた後に --new-key を付けて実行し直すか、記事を書く時にスキルが作る"
   fi
 fi
 
@@ -194,7 +218,56 @@ if [ "$author_given" != 1 ]; then
   fi
 fi
 
-echo "次は鍵とサイトの URL の登録: references/setup.md（入れた先のフォルダの中）"
+# 5. 投稿用の鍵（--new-key で作った時は聞かない）
+inst_key="${targets[0]}/ai-digest-post/scripts/key.mjs"
+ask_key_name() { # $1: --replace（作り直す時）か空
+  local cur ans
+  cur="$(head -n 1 "$key_name_file" 2>/dev/null | tr -d '\r' || true)"
+  echo "鍵の名前は、運営が誰の鍵かを見分けるための名前です。英小文字・数字・_- で32字まで。記事には出ません（記事に出るのは投稿者名）"
+  while :; do
+    if [ -n "$cur" ]; then printf '鍵の名前（今: %s。Enter でそのまま）: ' "$cur"; else printf '鍵の名前（例 tanaka。Enter で後にする）: '; fi
+    read -r ans || ans=""
+    [ -n "$ans" ] || ans="$cur"
+    if [ -z "$ans" ]; then
+      echo "投稿用の鍵: 後にした。記事を書く時にスキルが作る（node \"$inst_key\" new <鍵の名前> でも作れる）"
+      return 0
+    fi
+    if make_key "$ans" ${1:-}; then key_made=1; return 0; fi
+    cur="" # だめな名前なら、理由（key.mjs が出す）を見せて聞き直す
+  done
+}
+if [ "$newkey_given" != 1 ]; then
+  if [ "$node_ok" != 1 ]; then
+    echo "投稿用の鍵: Node.js を入れた後に node \"$inst_key\" new <鍵の名前> で作る。記事を書く時にスキルも作る"
+  elif [ -n "${AI_DIGEST_API_KEY:-}" ]; then
+    echo "投稿用の鍵: 環境変数 AI_DIGEST_API_KEY の鍵を使う（ここでは作らない）"
+  elif [ -f "$key_file" ]; then
+    if can_ask; then
+      printf '投稿用の鍵はもう登録されています。作り直しますか？ 作り直すと、運営が新しいハッシュ値を登録するまで投稿できません [y/N] '
+      read -r ans || ans=""
+      case "$ans" in
+        y|Y|yes|YES|Yes|はい) ask_key_name --replace ;;
+        *) echo "投稿用の鍵: そのまま使う（運営に送る1行をもう一度出す: node \"$inst_key\" hash）" ;;
+      esac
+    else
+      echo "投稿用の鍵: 登録済み（作り直す時は --new-key <鍵の名前> --replace-key）"
+    fi
+  elif can_ask; then
+    echo "投稿用の鍵を作ります。鍵はこのPCに置き、運営には鍵のハッシュ値だけを送ります。運営から鍵を受け取っている人は n を押し、references/setup.md の「運営から鍵を受け取った時」の手順で登録してください"
+    printf '投稿用の鍵を作りますか？ [Y/n] '
+    read -r ans || ans=""
+    case "$ans" in
+      n|N|no|NO|No|いいえ) echo "投稿用の鍵: 作らなかった" ;;
+      *) ask_key_name ;;
+    esac
+  else
+    echo "投稿用の鍵: 聞けないので作らなかった（端末でない）。--new-key <鍵の名前> を付けて実行し直すか、記事を書く時にスキルが作る"
+  fi
+fi
+
+echo "次にすること:"
+if [ "$key_made" = 1 ]; then echo "  - 上に出した1行（鍵のハッシュ値）を運営に送る。運営が登録すると投稿できる"; fi
+echo "  - 運営から受け取ったサイトの URL を登録する: references/setup.md の「2. サイトの URL を登録する」（入れた先のフォルダの中）"
 echo "確かめ: node \"${targets[0]}/ai-digest-post/scripts/post.mjs\" --check"
 [ "$node_ok" = 1 ] || exit 3
 [ "$extras_failed" = 0 ] || exit 4

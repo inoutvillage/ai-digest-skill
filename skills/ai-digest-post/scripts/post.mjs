@@ -17,6 +17,7 @@ export { scrub };
 
 const SETUP = 'このスキルのフォルダの references/setup.md';
 const KINDS = ['articles', 'digests'];
+const UNREGISTERED = 'このPCで作ったばかりの鍵なら、運営がハッシュ値を登録するまで使えない（node key.mjs hash で出る1行が運営に届いているかを確かめてもらう）。運営から受け取った鍵なら、写し間違いが無いかを見て、だめなら運営に連絡する';
 /** 鍵の形（運営が発行する鍵は aid_ と 16 進 48 字）。違えば通信の前に止める（改行などが混ざった鍵は、通信の例外文に全文が載るため） */
 export const KEY_RE = /^aid_[0-9a-f]{48}$/;
 
@@ -91,7 +92,7 @@ async function check(cfg, headers) {
   }
   const j = await r.json().catch(() => null);
   if (r.status === 401) {
-    err(`鍵が違うか、失効している（鍵の場所: ${cfg.keyFrom}）。写し間違いが無いかを見て、だめなら運営に連絡する`);
+    err(`鍵が違うか、失効している（鍵の場所: ${cfg.keyFrom}）。${UNREGISTERED}`);
     return 1;
   }
   if (!r.ok || !j?.ok) {
@@ -155,7 +156,8 @@ async function run(argv) {
   if (!cfg.url || !cfg.key) {
     const missing = [!cfg.url && 'サイトの URL', !cfg.key && '投稿の鍵'].filter(Boolean).join(' と ');
     err(`${missing}が見つからない（環境変数 AI_DIGEST_API_URL・AI_DIGEST_API_KEY も ${configDir()} の url・key も無い）。`);
-    err(`登録のしかた: ${SETUP}。運営から受け取った URL と鍵を、利用者が自分の端末に登録する（AI との会話には貼らない）`);
+    if (!cfg.key) err(`投稿用の鍵は、このPCで作れる: node key.mjs new <鍵の名前>（出た1行＝鍵のハッシュ値を運営に送る）。運営から鍵を受け取った人は ${SETUP} の手順で登録する（AI との会話には貼らない）`);
+    if (!cfg.url) err(`サイトの URL は運営から受け取り、${SETUP} の手順で登録する`);
     return 2;
   }
   if (!/^https:\/\//.test(cfg.url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cfg.url)) {
@@ -188,7 +190,7 @@ async function run(argv) {
   }
   const j = await r.json().catch(() => ({}));
   out(`投稿: HTTP ${r.status}`, JSON.stringify(j));
-  if (r.status === 401) err(`鍵が違うか、失効している（${cfg.keyFrom}）。node post.mjs --check で確かめる`);
+  if (r.status === 401) err(`鍵が違うか、失効している（${cfg.keyFrom}）。${UNREGISTERED}`);
   if (!r.ok) return 1;
   if (opt.publish) {
     let r2;

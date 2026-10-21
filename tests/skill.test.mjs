@@ -86,7 +86,7 @@ test('スキルの説明文: 名前はフォルダと同じ。説明は Codex �
   assert.equal(scalar(s.split(/^---$/m)[1], 'name'), 'ai-digest-post');
   const d = scalar(s.split(/^---$/m)[1], 'description');
   assert.ok(d.length > 50 && d.length <= 500, `説明 ${d.length} 字`);
-  for (const f of ['scripts/post.mjs', 'scripts/check.mjs', 'scripts/find-history.mjs', 'assets/template.md', 'references/setup.md', 'references/writing.md', 'references/images.md']) {
+  for (const f of ['scripts/post.mjs', 'scripts/check.mjs', 'scripts/find-history.mjs', 'scripts/key.mjs', 'assets/template.md', 'references/setup.md', 'references/writing.md', 'references/images.md']) {
     assert.ok(s.includes(`\`${f}\``), `${f} が SKILL.md に書かれていない`);
     assert.ok(existsSync(join(SKILL, f)), `${f} が無い`);
   }
@@ -944,6 +944,173 @@ test('入れる道具: --author-name で聞かずに決める。だめな名前�
     assert.equal(ok.code, 0, ok.out);
     assert.equal(readFileSync(join(t.home, '.config/ai-digest/name'), 'utf-8'), 'はなこ\n');
     assert.doesNotMatch(ok.out, /投稿者名（/); // 聞かない
+  } finally {
+    t.cleanup();
+  }
+});
+
+// ---- 投稿用の鍵（この PC で作り、運営には鍵のハッシュ値の 1 行だけを送る） ----
+import { createHash } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { main as keyMain } from '../skills/ai-digest-post/scripts/key.mjs';
+
+const sha = (k) => createHash('sha256').update(k, 'utf8').digest('hex');
+/** key.mjs を、作った手元で動かす（出力を集める）。ask は「消しますか？」への答え */
+async function keyRun(argv, home, { env = {}, ask } = {}) {
+  const lines = [];
+  const code = await keyMain(argv, { env, home, out: (l) => lines.push(l), err: (l) => lines.push(l), ask });
+  return { code, out: lines.join('\n') };
+}
+const keyOf = (home) => readFileSync(join(home, '.config/ai-digest/key'), 'utf-8');
+
+test('鍵の道具: 鍵を作って本人だけが読める所に置き、運営に送る 1 行（鍵のハッシュ値）を出す。鍵そのものは出さない', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'aid-key-'));
+  try {
+    const r = await keyRun(['new', 'tanaka'], home);
+    assert.equal(r.code, 0, r.out);
+    const key = keyOf(home);
+    assert.match(key, KEY_RE);
+    assert.equal(statSync(join(home, '.config/ai-digest/key')).mode & 0o777, 0o600);
+    assert.ok(r.out.includes(JSON.stringify({ name: 'tanaka', sha256: sha(key) })));
+    assert.match(r.out, /次の1行を運営に送ってください。中身は鍵のハッシュ値で、鍵には戻せません。人に見られてもかまいません。/);
+    assert.ok(!r.out.includes(key) && !r.out.includes(key.slice(4)));
+    const h = await keyRun(['hash'], home);
+    assert.equal(h.code, 0);
+    assert.ok(h.out.includes(JSON.stringify({ name: 'tanaka', sha256: sha(key) })));
+    assert.ok(!h.out.includes(key.slice(4)));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('鍵の道具: もう鍵があれば 3 で止め、鍵を変えない。--replace で作り直すと、前の鍵の 1 行も出す', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'aid-key-'));
+  try {
+    await keyRun(['new', 'tanaka'], home);
+    const first = keyOf(home);
+    const again = await keyRun(['new', 'tanaka'], home);
+    assert.equal(again.code, 3);
+    assert.match(again.out, /もう登録されています.*--replace/);
+    assert.equal(keyOf(home), first);
+    const re = await keyRun(['new', 'tanaka', '--replace'], home);
+    assert.equal(re.code, 0, re.out);
+    const second = keyOf(home);
+    assert.notEqual(second, first);
+    assert.ok(re.out.indexOf(sha(first)) < re.out.indexOf(sha(second)));
+    assert.match(re.out, /前の鍵のハッシュ値です。運営に、この行を消してもらってください/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('鍵の道具: 消す前に確かめる。「いいえ」と、確かめられない時は 4 で消さない。--yes か「はい」で消す', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'aid-key-'));
+  try {
+    await keyRun(['new', 'tanaka'], home);
+    const key = keyOf(home);
+    const no = await keyRun(['delete'], home, { ask: async () => 'n' });
+    assert.equal(no.code, 4);
+    assert.equal(keyOf(home), key);
+    const quiet = await keyRun(['delete'], home); // 端末でない（ask も無い）
+    assert.equal(quiet.code, 4);
+    assert.match(quiet.out, /確かめられないので消さなかった.*--yes/);
+    const yes = await keyRun(['delete'], home, { ask: async () => 'y' });
+    assert.equal(yes.code, 0, yes.out);
+    assert.equal(existsSync(join(home, '.config/ai-digest/key')), false);
+    assert.equal(existsSync(join(home, '.config/ai-digest/key-name')), false);
+    assert.ok(yes.out.includes(sha(key)));
+    assert.match(yes.out, /運営がこの行を消すまで有効です/);
+    assert.equal((await keyRun(['delete', '--yes'], home)).code, 0); // もう無い
+    await keyRun(['new', 'tanaka'], home);
+    assert.equal((await keyRun(['delete', '--yes'], home)).code, 0);
+    assert.equal(existsSync(join(home, '.config/ai-digest/key')), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('鍵の道具: だめな鍵の名前・知らない指定・環境変数の鍵がある時は 2。鍵が無いのに hash は 2', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'aid-key-'));
+  try {
+    for (const argv of [['new', 'Tanaka'], ['new', '-x'], ['new'], ['new', 'a'.repeat(33)], ['new', 'tanaka', '--yes'], ['bogus'], [], ['hash', 'x']]) assert.equal((await keyRun(argv, home)).code, 2, JSON.stringify(argv));
+    assert.equal(existsSync(join(home, '.config/ai-digest/key')), false);
+    assert.equal((await keyRun(['hash'], home)).code, 2);
+    const env = await keyRun(['new', 'tanaka'], home, { env: { AI_DIGEST_API_KEY: KEY } });
+    assert.equal(env.code, 2);
+    assert.match(env.out, /環境変数 AI_DIGEST_API_KEY/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('送る道具: 鍵が無い時は、この PC で鍵を作る道具を案内する。作ったばかりで通らない時は、運営の登録待ちだと分かる', async () => {
+  const site = await fakeSite();
+  const none = homeWith({ url: site.url });
+  const unregistered = homeWith({ url: site.url, key: `aid_${'e'.repeat(48)}`, name: 'たなか' });
+  try {
+    const r = await run(join(SKILL, 'scripts/post.mjs'), ['--check'], none);
+    assert.match(r.out, /投稿用の鍵は、このPCで作れる: node key\.mjs new <鍵の名前>/);
+    const r2 = await run(join(SKILL, 'scripts/post.mjs'), ['--check'], unregistered);
+    assert.equal(r2.code, 1);
+    assert.match(r2.out, /作ったばかりの鍵なら、運営がハッシュ値を登録するまで使えない/);
+  } finally {
+    await site.close();
+    rmSync(none, { recursive: true, force: true });
+    rmSync(unregistered, { recursive: true, force: true });
+  }
+});
+
+test('入れる道具: --new-key で鍵を作り、運営に送る 1 行と次にすることを出す。だめな名前・作り直しの指定が無い時は、入れる前に 2 で止める', async () => {
+  const t = installSetup();
+  try {
+    const bad = await installer({ home: t.home, args: ['--no-extras', '--author-name', 'たなか', '--new-key', 'Bad!'] });
+    assert.equal(bad.code, 2, bad.out);
+    assert.equal(existsSync(join(t.home, '.claude/skills/ai-digest-post')), false);
+    const ok = await installer({ home: t.home, args: ['--no-extras', '--author-name', 'たなか', '--new-key', 'tanaka'] });
+    assert.equal(ok.code, 0, ok.out);
+    const key = keyOf(t.home);
+    assert.ok(ok.out.includes(JSON.stringify({ name: 'tanaka', sha256: sha(key) })));
+    assert.match(ok.out, /上に出した1行（鍵のハッシュ値）を運営に送る/);
+    assert.ok(!ok.out.includes(key.slice(4)));
+    const noReplace = await installer({ home: t.home, args: ['--no-extras', '--author-name', 'たなか', '--new-key', 'tanaka'] });
+    assert.equal(noReplace.code, 2, noReplace.out);
+    assert.equal(keyOf(t.home), key);
+    const replaced = await installer({ home: t.home, args: ['--no-extras', '--author-name', 'たなか', '--new-key', 'tanaka', '--replace-key'] });
+    assert.equal(replaced.code, 0, replaced.out);
+    assert.notEqual(keyOf(t.home), key);
+    assert.ok(replaced.out.includes(sha(key))); // 前の鍵の 1 行
+    const quiet = await installer({ home: t.home, args: ['--no-extras', '--author-name', 'たなか'] });
+    assert.match(quiet.out, /投稿用の鍵: 登録済み（作り直す時は --new-key <鍵の名前> --replace-key）/);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test('入れる道具: 鍵を作るかを聞く（Enter で作る・n で作らない）。もう鍵があれば作り直すかを聞く（Enter でそのまま）。聞けない時は作らない', async () => {
+  const t = installSetup();
+  try {
+    const env = { AI_DIGEST_EXTRAS_SOURCE: t.extras, AI_DIGEST_INSTALL_ASSUME_TTY: '1' };
+    const args = ['--no-extras', '--author-name', 'たなか'];
+    const quiet = await installer({ home: t.home, args });
+    assert.match(quiet.out, /投稿用の鍵: 聞けないので作らなかった（端末でない）。--new-key/);
+    assert.equal(existsSync(join(t.home, '.config/ai-digest/key')), false);
+    const skip = await installer({ home: t.home, args, env, input: 'n\n' });
+    assert.match(skip.out, /投稿用の鍵: 作らなかった/);
+    assert.equal(existsSync(join(t.home, '.config/ai-digest/key')), false);
+    const made = await installer({ home: t.home, args, env, input: '\nBad!\ntanaka\n' });
+    assert.equal(made.code, 0, made.out);
+    assert.match(made.out, /鍵の名前は、運営が誰の鍵かを見分けるための名前です/);
+    assert.match(made.out, /鍵の名前は、英小文字・数字・_- で32字まで/); // だめな名前の理由を見せて聞き直した
+    const key = keyOf(t.home);
+    assert.ok(made.out.includes(JSON.stringify({ name: 'tanaka', sha256: sha(key) })));
+    const keep = await installer({ home: t.home, args, env, input: '\n' });
+    assert.match(keep.out, /投稿用の鍵: そのまま使う/);
+    assert.equal(keyOf(t.home), key);
+    const remake = await installer({ home: t.home, args, env, input: 'y\n\n' }); // 名前は今のまま（Enter）
+    assert.equal(remake.code, 0, remake.out);
+    assert.match(remake.out, /鍵の名前（今: tanaka。Enter でそのまま）/);
+    assert.notEqual(keyOf(t.home), key);
+    assert.ok(remake.out.includes(sha(key)));
   } finally {
     t.cleanup();
   }

@@ -33,10 +33,11 @@ cd ai-digest-skill
 2. スキルを、Claude Code と Codex の入っている方（両方なら両方）に写します。前の版は `~/.ai-digest-skill/backup/` に残します（スキルの置き場の外なので、古い版が読み込まれることはありません）。片方だけに入れる時は `--claude` か `--codex`（Windows は `-Claude` か `-Codex`）を付けます
 3. 連携するスキル（imozuru と yomiyasu。下の「連携するスキル」）が入っていなければ、入れるかを 1 つずつ聞きます（y/N）。入れなくても記事は書けます。後から入れた時も、スキルが記事を書くたびに見つけて使います。すでに入っている物には手を付けません
 4. 投稿者名を聞きます。**投稿者名は、記事の下に「投稿者：<名前>」と表示される名前で、サイトを読む人に見えます。** 本名でなくてかまいません。30 字までです。決めなかった時は、記事を書く時にスキルが聞きます。登録済みなら今の名前を見せ、Enter でそのまま使います
+5. 投稿用の鍵を作るかを聞きます（Y/n）。作ると、運営に送る 1 行（鍵のハッシュ値）を表示します。鍵そのものは表示せず、この PC の外に出しません。もう鍵がある時は、作り直すかを聞きます（y/N）
 
 ### AI に頼んで入れる時
 
-AI が入れる道具を動かすと、質問に答えられません。その時は連携するスキルを入れずに進みます。入れたい時は、先に AI に伝えて `--with-extras`（両方）・`--with-imozuru`・`--with-yomiyasu` を付けてもらいます（Windows は `-WithExtras`・`-WithImozuru`・`-WithYomiyasu`）。聞かずに入れない時は `--no-extras`（`-NoExtras`）です。投稿者名も聞けないので、記事の下に表示したい名前を AI に伝えて `--author-name "<名前>"`（Windows は `-AuthorName "<名前>"`）を付けてもらいます。
+AI が入れる道具を動かすと、質問に答えられません。その時は連携するスキルを入れずに進みます。入れたい時は、先に AI に伝えて `--with-extras`（両方）・`--with-imozuru`・`--with-yomiyasu` を付けてもらいます（Windows は `-WithExtras`・`-WithImozuru`・`-WithYomiyasu`）。聞かずに入れない時は `--no-extras`（`-NoExtras`）です。投稿者名も聞けないので、記事の下に表示したい名前を AI に伝えて `--author-name "<名前>"`（Windows は `-AuthorName "<名前>"`）を付けてもらいます。鍵も作れないので、鍵の名前を AI に伝えて `--new-key <鍵の名前>`（Windows は `-NewKey <鍵の名前>`）を付けてもらいます。もう鍵があって作り直す時は `--replace-key`（`-ReplaceKey`）も付けます。
 
 入れる道具の終わりの値: 0 は済んだ、3 はスキルを入れたが Node.js が要る、4 はスキルを入れたが連携するスキルを取れなかった。
 
@@ -44,11 +45,21 @@ AI が入れる道具を動かすと、質問に答えられません。その�
 
 更新する時は、このフォルダで `git pull` してから、入れる道具をもう一度実行します（前の版は `~/.ai-digest-skill/backup/` に残して入れ替えます）。
 
-## 2. 鍵とサイトの URL を登録する（初めての時に 1 回）
+## 2. 投稿の準備（鍵・サイトの URL・投稿者名）
 
-運営から受け取った鍵とサイトの URL を、自分の端末に登録します。手順は `skills/ai-digest-post/references/setup.md` にあります。スキルも、鍵が無いと気づいた時にこの手順を案内します。
+投稿用の鍵は、運営から受け取らずに自分の PC で作ります。入れる道具が作るかを聞き、作ると次のように表示します。
 
-**鍵を AI との会話に貼らないでください。** 登録は自分のターミナルで行います。
+```text
+投稿用の鍵を作り、このPCに保存しました（~/.config/ai-digest/key。鍵の中身は表示しません）。
+次の1行を運営に送ってください。中身は鍵のハッシュ値で、鍵には戻せません。人に見られてもかまいません。
+{"name":"tanaka","sha256":"…"}
+```
+
+この 1 行を運営に送ります。ハッシュ値は鍵から計算した値で、鍵には戻せないので、メールやチャットで送ってかまいません。運営が登録すると投稿できます。鍵の名前は、運営が誰の鍵かを見分けるための名前で、記事には表示されません。
+
+後から作る・作り直す・消す時は、AI に「投稿の鍵を作って」「ハッシュ値を出して」「鍵を消して」と頼むか、`key.mjs` を直接使います（下の「5. 道具を直接使う時」）。サイトの URL は運営から受け取り、`skills/ai-digest-post/references/setup.md` の「2. サイトの URL を登録する」で登録します。
+
+**鍵を AI との会話に貼らないでください。** スキルの道具は鍵を表示しません。運営から鍵を受け取った人の登録の手順も、setup.md にあります。
 
 投稿者名（記事の下に表示される名前）は、入れる道具が聞いて `~/.config/ai-digest/name` に置きます。鍵の名前とは別で、鍵の名前は記事に表示されません。後から変える時は `node skills/ai-digest-post/scripts/post.mjs --set-name "<名前>"` です。
 
@@ -112,6 +123,10 @@ client-a
 ```bash
 node skills/ai-digest-post/scripts/post.mjs --check                          # 鍵と URL と投稿者名の確かめ
 node skills/ai-digest-post/scripts/post.mjs --set-name "たなか"               # 投稿者名（記事の下に表示される名前）を登録・変更する
+node skills/ai-digest-post/scripts/key.mjs new tanaka                        # 投稿用の鍵を作り、運営に送る 1 行（鍵のハッシュ値）を出す
+node skills/ai-digest-post/scripts/key.mjs new tanaka --replace              # 鍵を作り直す（前の鍵の 1 行も出る）
+node skills/ai-digest-post/scripts/key.mjs hash                              # 運営に送る 1 行をもう一度出す
+node skills/ai-digest-post/scripts/key.mjs delete                            # この PC の鍵を消す（消してよいかを聞く）
 node skills/ai-digest-post/scripts/find-history.mjs --query "EmbeddingGemma 文字起こし"   # 前に調べた会話を探す（メモの場所を出す）
 node skills/ai-digest-post/scripts/check.mjs 2026-10-20_my-article.md        # 送る前の確かめ
 node skills/ai-digest-post/scripts/post.mjs 2026-10-20_my-article.md --image 2026-10-20_my-article.jpg   # 下書きで送る
@@ -134,4 +149,4 @@ node skills/ai-digest-post/scripts/post.mjs 2026-10-20_my-article.md --publish  
 
 ## 鍵が漏れた・投稿をやめる時
 
-運営に連絡してください。運営がその鍵を止め、必要なら新しい鍵を作ります。手元の鍵は `skills/ai-digest-post/references/setup.md` の「5. 鍵を消す・替える」の手順で消します。
+運営に連絡してください。運営がその鍵の行を消して止めます。手元の鍵は `node skills/ai-digest-post/scripts/key.mjs delete` で消し、続ける時は作り直します（`skills/ai-digest-post/references/setup.md` の「5. 鍵を消す・作り直す」）。

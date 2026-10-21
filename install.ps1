@@ -1,13 +1,17 @@
 ﻿# ai-digest の投稿スキル（ai-digest-post）を入れる。Windows の PowerShell 用（Mac・Linux・WSL は install.sh）。
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Claude] [-Codex] [-WithImozuru] [-WithYomiyasu] [-WithExtras] [-NoExtras] [-AuthorName <投稿者名>]
+#                                                [-NewKey <鍵の名前>] [-ReplaceKey]
 # 流れと終わりの値は install.sh と同じ:
 #   Node.js 22 以上を見る（無ければ入れ方を案内）→ スキルを写す（前の版は ~/.ai-digest-skill/backup/ に。スキルの置き場の外）→ imozuru と yomiyasu が無ければ入れるかを聞く（y/N）
 #   → 投稿者名（記事の下に「投稿者：<名前>」と表示される名前）を聞く（-AuthorName で聞かずに決める。だめな名前なら入れる前に 2 で止める）
+#   → 投稿用の鍵を作るかを聞く（鍵はこのPCに置き、運営には鍵のハッシュ値の1行だけを送る。もう鍵があれば作り直すかを聞く。
+#     -NewKey で聞かずに作る。もう鍵がある時は -ReplaceKey も要る。だめなら入れる前に 2 で止める）
 #   0 済んだ／1 入れる先が無い／3 スキルは入れたが Node.js が要る／4 スキルは入れたが連携するスキルを入れられなかった
 param(
   [switch]$Claude, [switch]$Codex,
   [switch]$WithImozuru, [switch]$WithYomiyasu, [switch]$WithExtras, [switch]$NoExtras,
   [string]$AuthorName,
+  [string]$NewKey, [switch]$ReplaceKey,
   [string]$HomeDir = $HOME   # 試し用に差し替えられる
 )
 $ErrorActionPreference = 'Stop'
@@ -69,7 +73,8 @@ if ($major -ge 22) {
 
 # 投稿者名の確かめと書き込みは post.mjs に任せる（名前の決まりを 1 か所にする）
 $nameFile = Join-Path $HomeDir '.config\ai-digest\name'
-function Invoke-SetName([string]$n) {
+function Invoke-SkillScript([string]$script, [string[]]$scriptArgs) {
+  # スキルの道具（post.mjs・key.mjs）を動かして、終わりの番号を返す。
   # Node の出力（UTF-8）を崩さずに受け、試し用の HomeDir も Node に渡す。Node が標準エラーに書いても止めない
   $prevEap = $ErrorActionPreference
   $prevHome = $env:HOME
@@ -80,7 +85,7 @@ function Invoke-SetName([string]$n) {
   try {
     $env:HOME = $HomeDir
     $env:USERPROFILE = $HomeDir
-    $msg = & $nodeBin (Join-Path $src 'scripts\post.mjs') --set-name $n 2>&1
+    $msg = & $nodeBin (Join-Path $src "scripts\$script") @scriptArgs 2>&1
     $code = $LASTEXITCODE
   } finally {
     $env:HOME = $prevHome
@@ -89,8 +94,9 @@ function Invoke-SetName([string]$n) {
     $ErrorActionPreference = $prevEap
   }
   foreach ($l in @($msg)) { Write-Host "$l" }
-  return ($code -eq 0)
+  return $code
 }
+function Invoke-SetName([string]$n) { return ((Invoke-SkillScript 'post.mjs' @('--set-name', $n)) -eq 0) }
 function Get-CurrentName {
   if (-not (Test-Path -LiteralPath $nameFile)) { return '' }
   try { return ('' + (Get-Content -LiteralPath $nameFile -Encoding UTF8 -TotalCount 1)).Trim() } catch { return '' }
@@ -101,6 +107,22 @@ if ($authorGiven) {
     if (-not (Invoke-SetName $AuthorName)) { Write-Host '-AuthorName の名前を直して、もう一度実行する（スキルはまだ入れていない）'; exit 2 }
   } else {
     Write-Host '投稿者名: Node.js が無いので登録できない。Node.js を入れた後に -AuthorName を付けて実行し直すか、記事を書く時にスキルが聞く'
+  }
+}
+
+# 投稿用の鍵を作るのは key.mjs（鍵は表示せず、運営に送る1行＝鍵のハッシュ値を出す）
+$keyFile = Join-Path $HomeDir '.config\ai-digest\key'
+$keyNameFile = Join-Path $HomeDir '.config\ai-digest\key-name'
+$keyMade = $false
+$newKeyGiven = $PSBoundParameters.ContainsKey('NewKey')
+if ($newKeyGiven) {
+  if ($nodeOk) {
+    $keyArgs = @('new', $NewKey)
+    if ($ReplaceKey) { $keyArgs += '--replace' }
+    if ((Invoke-SkillScript 'key.mjs' $keyArgs) -eq 0) { $keyMade = $true }
+    else { Write-Host '-NewKey を直して、もう一度実行する（スキルはまだ入れていない。もう鍵があって作り直す時は -ReplaceKey も付ける）'; exit 2 }
+  } else {
+    Write-Host '投稿用の鍵: Node.js が無いので作れない。Node.js を入れた後に -NewKey を付けて実行し直すか、記事を書く時にスキルが作る'
   }
 }
 
@@ -189,7 +211,50 @@ if (-not $authorGiven) {
   }
 }
 
-Write-Host '次は鍵とサイトの URL の登録: references\setup.md（入れた先のフォルダの中）'
+# 5. 投稿用の鍵（-NewKey で作った時は聞かない）
+$instKey = Join-Path $targets[0] 'ai-digest-post\scripts\key.mjs'
+function Read-KeyName([bool]$replace) {
+  $cur = ''
+  if (Test-Path -LiteralPath $keyNameFile) { try { $cur = ('' + (Get-Content -LiteralPath $keyNameFile -Encoding UTF8 -TotalCount 1)).Trim() } catch { $cur = '' } }
+  Write-Host '鍵の名前は、運営が誰の鍵かを見分けるための名前です。英小文字・数字・_- で32字まで。記事には出ません（記事に出るのは投稿者名）'
+  while ($true) {
+    $prompt = if ($cur) { "鍵の名前（今: $cur。Enter でそのまま）" } else { '鍵の名前（例 tanaka。Enter で後にする）' }
+    $ans = Read-Host $prompt
+    if (-not $ans) { $ans = $cur }
+    if (-not $ans) { Write-Host ('投稿用の鍵: 後にした。記事を書く時にスキルが作る（node "{0}" new <鍵の名前> でも作れる）' -f $instKey); return $false }
+    $a = @('new', $ans)
+    if ($replace) { $a += '--replace' }
+    if ((Invoke-SkillScript 'key.mjs' $a) -eq 0) { return $true }
+    $cur = ''   # だめな名前なら、理由（key.mjs が出す）を見せて聞き直す
+  }
+}
+if (-not $newKeyGiven) {
+  $canAsk = $assumeTty -or ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected)
+  if (-not $nodeOk) {
+    Write-Host ('投稿用の鍵: Node.js を入れた後に node "{0}" new <鍵の名前> で作る。記事を書く時にスキルも作る' -f $instKey)
+  } elseif ($env:AI_DIGEST_API_KEY) {
+    Write-Host '投稿用の鍵: 環境変数 AI_DIGEST_API_KEY の鍵を使う（ここでは作らない）'
+  } elseif (Test-Path -LiteralPath $keyFile) {
+    if ($canAsk) {
+      $ans = Read-Host '投稿用の鍵はもう登録されています。作り直しますか？ 作り直すと、運営が新しいハッシュ値を登録するまで投稿できません [y/N]'
+      if ($ans -match '^(y|yes|はい)$') { if (Read-KeyName $true) { $keyMade = $true } }
+      else { Write-Host ('投稿用の鍵: そのまま使う（運営に送る1行をもう一度出す: node "{0}" hash）' -f $instKey) }
+    } else {
+      Write-Host '投稿用の鍵: 登録済み（作り直す時は -NewKey <鍵の名前> -ReplaceKey）'
+    }
+  } elseif ($canAsk) {
+    Write-Host '投稿用の鍵を作ります。鍵はこのPCに置き、運営には鍵のハッシュ値だけを送ります。運営から鍵を受け取っている人は n を押し、references\setup.md の「運営から鍵を受け取った時」の手順で登録してください'
+    $ans = Read-Host '投稿用の鍵を作りますか？ [Y/n]'
+    if ($ans -match '^(n|no|いいえ)$') { Write-Host '投稿用の鍵: 作らなかった' }
+    elseif (Read-KeyName $false) { $keyMade = $true }
+  } else {
+    Write-Host '投稿用の鍵: 聞けないので作らなかった（端末でない）。-NewKey <鍵の名前> を付けて実行し直すか、記事を書く時にスキルが作る'
+  }
+}
+
+Write-Host '次にすること:'
+if ($keyMade) { Write-Host '  - 上に出した1行（鍵のハッシュ値）を運営に送る。運営が登録すると投稿できる' }
+Write-Host '  - 運営から受け取ったサイトの URL を登録する: references\setup.md の「2. サイトの URL を登録する」（入れた先のフォルダの中）'
 Write-Host ('確かめ: node "{0}\ai-digest-post\scripts\post.mjs" --check' -f $targets[0])
 if (-not $nodeOk) { exit 3 }
 if ($extrasFailed) { exit 4 }
