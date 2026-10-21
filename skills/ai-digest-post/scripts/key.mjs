@@ -13,7 +13,6 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { configDir, KEY_RE } from './post.mjs';
-import { scrub } from './mask.mjs';
 
 export const KEY_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 export const keyFile = (home = homedir()) => join(configDir(home), 'key');
@@ -74,9 +73,16 @@ export function commitKey(file, nameFile, key, name, prevName, fsx = { mkdirSync
 }
 
 export async function main(argv, { env = process.env, home = homedir(), out: rawOut = console.log, err: rawErr = console.error, ask } = {}) {
-  // 画面に出す物は全部、鍵を伏せてから出す（名前の欄に鍵を入れ間違えた時も、作った鍵も出さない）
+  // 画面に出す物は全部、知っている鍵（登録した鍵・作った鍵・環境変数の鍵と、その aid_ の後ろ）を伏せてから出す。
+  // 「aid_ を含む文字列」を全部伏せる形にはしない（aid_tanaka や said_ali のような正しい鍵の名前まで壊れ、運営に送る 1 行が違ってしまう）。
+  // 入れた物（名前の欄に入れ間違えた鍵など）は表示しないので、知らない鍵が出ることはない
   const secrets = [env.AI_DIGEST_API_KEY ?? ''];
-  const hide = (t) => secrets.reduce((text, k) => scrub(text, k), String(t));
+  const hide = (t) =>
+    secrets
+      .filter(Boolean)
+      .flatMap((k) => [k, k.startsWith('aid_') ? k.slice(4) : ''])
+      .filter((x) => x.length >= 8)
+      .reduce((text, x) => text.split(x).join('<鍵>'), String(t));
   const out = (t) => rawOut(hide(t));
   const err = (t) => rawErr(hide(t));
   const [cmd, ...rest] = argv;

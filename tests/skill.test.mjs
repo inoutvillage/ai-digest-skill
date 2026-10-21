@@ -113,7 +113,7 @@ test('鍵と URL の探し方: 引数 → 環境変数 → ~/.config/ai-digest �
 });
 
 // 偽のサイト（鍵を照合し、届いた物を覚える）
-async function fakeSite() {
+async function fakeSite({ name = 'tanaka' } = {}) {
   const got = [];
   const server = createServer((req, res) => {
     let body = '';
@@ -122,7 +122,7 @@ async function fakeSite() {
       got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body });
       res.setHeader('content-type', 'application/json');
       if (req.headers.authorization !== `Bearer ${KEY}`) return res.writeHead(401).end(JSON.stringify({ ok: false, errors: ['鍵が違う'] }));
-      if (req.method === 'GET' && req.url === '/api/articles') return res.end(JSON.stringify({ ok: true, me: { name: 'tanaka', role: 'writer' }, articles: [{}, {}] }));
+      if (req.method === 'GET' && req.url === '/api/articles') return res.end(JSON.stringify({ ok: true, me: { name, role: 'writer' }, articles: [{}, {}] }));
       if (req.method === 'POST' && req.url === '/api/articles') return res.writeHead(201).end(JSON.stringify({ ok: true, slug: 'sample-article', status: 'draft' }));
       if (req.method === 'POST' && req.url === '/api/articles/publish') return res.writeHead(403).end(JSON.stringify({ ok: false, errors: ['公開できない'] }));
       res.writeHead(404).end('{}');
@@ -1193,6 +1193,42 @@ test('鍵の道具: 置き場に書けない時は 1 で止め、元の鍵のま
     assert.equal(readFileSync(join(dir, 'key-name'), 'utf-8'), 'tanaka\n');
   } finally {
     chmodSync(dir, 0o700);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('鍵の道具: aid_ を含む正しい鍵の名前（aid_tanaka・said_ali）も、運営に送る 1 行にそのまま出す（鍵は伏せる）', async () => {
+  for (const name of ['aid_tanaka', 'said_ali']) {
+    const home = mkdtempSync(join(tmpdir(), 'aid-key-'));
+    try {
+      const r = await keyRun(['new', name], home);
+      assert.equal(r.code, 0, r.out);
+      const key = keyOf(home);
+      const line = JSON.stringify({ name, sha256: sha(key) });
+      assert.ok(r.out.includes(line), r.out);
+      assert.equal(readFileSync(join(home, '.config/ai-digest/key-name'), 'utf-8'), `${name}\n`);
+      const h = await keyRun(['hash'], home);
+      assert.ok(h.out.includes(line), h.out);
+      for (const o of [r.out, h.out]) assert.ok(!o.includes(key.slice(4)));
+      const re = await keyRun(['new', name, '--replace'], home);
+      assert.ok(re.out.includes(line)); // 前の鍵の 1 行も名前のまま
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
+test('送る道具: --check は aid_ を含む鍵の名前と投稿者名（said_ali）を壊さずに出す。鍵は出さない', async () => {
+  const site = await fakeSite({ name: 'said_ali' });
+  const home = homeWith({ url: site.url, key: KEY, name: 'said_ali' });
+  try {
+    const r = await run(join(SKILL, 'scripts/post.mjs'), ['--check'], home);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /鍵は有効です: said_ali（writer/);
+    assert.match(r.out, /投稿者名: said_ali（記事の下に「投稿者：said_ali」と表示される/);
+    assert.doesNotMatch(r.out, new RegExp(KEY.slice(4)));
+  } finally {
+    await site.close();
     rmSync(home, { recursive: true, force: true });
   }
 });

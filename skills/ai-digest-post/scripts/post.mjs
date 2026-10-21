@@ -24,6 +24,9 @@ export const KEY_RE = /^aid_[0-9a-f]{48}$/;
 // 画面に出す物は全部ここを通す（URL や引数の入れ間違いで鍵が出ないように）。鍵は設定を読んだ所で覚える
 let knownKey = '';
 const out = (...a) => console.log(...a.map((x) => scrub(x, knownKey)));
+/** 名前を含む行を出す。名前は決まりで確かめた物（鍵ではない）なので、伏せた後に戻す（said_ali のような名前が「s」と「aid_<鍵>」に壊れないように） */
+const outNamed = (line, name) => (name ? console.log(scrub(line.split(name).join('\u0000'), knownKey).split('\u0000').join(name)) : out(line));
+const KEY_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const err = (...a) => console.error(...a.map((x) => scrub(x, knownKey)));
 
 /** fetch の包み。通信の失敗は、元の例外文（鍵を含みうる）を出さずに、理由の符号だけの例外にする */
@@ -100,7 +103,8 @@ async function check(cfg, headers) {
     return 1;
   }
   const role = j.me?.role ?? '?';
-  out(`鍵は有効です: ${j.me?.name ?? '?'}（${role}・${ROLE_CAN[role] ?? ''}）。自分の記事 ${Array.isArray(j.articles) ? j.articles.length : 0} 本`);
+  const keyName = KEY_NAME_RE.test(j.me?.name ?? '') ? j.me.name : ''; // サイトが決まりで確かめた鍵の名前（32 字まで。鍵ではない）
+  outNamed(`鍵は有効です: ${keyName || '?'}（${role}・${ROLE_CAN[role] ?? ''}）。自分の記事 ${Array.isArray(j.articles) ? j.articles.length : 0} 本`, keyName);
   out(`URL: ${cfg.url}（${cfg.urlFrom}）・鍵の場所: ${cfg.keyFrom}`);
   return 0;
 }
@@ -151,7 +155,7 @@ async function run(argv) {
   }
   if (opt.setName !== undefined) return setName(opt.setName);
   const author = registeredName();
-  if (opt.check) out(nameLine(author));
+  if (opt.check) outNamed(nameLine(author), author.name); // 投稿者名は validateName で確かめ済み（鍵のような文字列は断っている）
   if (opt.key) err(`注意: --key で渡した鍵はシェルの履歴に残る。次からは端末に登録した鍵を使う（${SETUP}）`);
   if (!cfg.url || !cfg.key) {
     const missing = [!cfg.url && 'サイトの URL', !cfg.key && '投稿の鍵'].filter(Boolean).join(' と ');
