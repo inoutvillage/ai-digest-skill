@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { configDir, KEY_RE } from './post.mjs';
+import { scrub } from './mask.mjs';
 
 export const KEY_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 export const keyFile = (home = homedir()) => join(configDir(home), 'key');
@@ -35,15 +36,49 @@ const readTrim = (file) => {
   }
 };
 
-/** 鍵を書く（一時のファイルに書いてから置き換える。権限は本人だけ） */
-function writeSecret(file, text) {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, text, { mode: 0o600 });
-  renameSync(tmp, file);
+/** 鍵と鍵の名前を書き換える。両方を一時のファイルに書いてから、名前・鍵の順に置き換える（権限は本人だけ）。
+ *  鍵は最後に置き換えるので、途中で失敗しても元の鍵が残る。名前だけ置き換わっていたら元に戻す。失敗は例外で返す */
+export function commitKey(file, nameFile, key, name, prevName, fsx = { mkdirSync, writeFileSync, renameSync, rmSync }) {
+  fsx.mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const tmpKey = `${file}.${process.pid}.tmp`;
+  const tmpName = `${nameFile}.${process.pid}.tmp`;
+  const cleanup = () => {
+    for (const t of [tmpKey, tmpName]) {
+      try {
+        fsx.rmSync(t, { force: true });
+      } catch {
+        // 消せない一時のファイルは残るが、鍵の置き場は変わらない
+      }
+    }
+  };
+  try {
+    fsx.writeFileSync(tmpKey, key, { mode: 0o600 });
+    fsx.writeFileSync(tmpName, `${name}\n`, { mode: 0o600 });
+    fsx.renameSync(tmpName, nameFile);
+  } catch (e) {
+    cleanup();
+    throw e;
+  }
+  try {
+    fsx.renameSync(tmpKey, file);
+  } catch (e) {
+    try {
+      if (prevName) fsx.writeFileSync(nameFile, `${prevName}\n`, { mode: 0o600 });
+      else fsx.rmSync(nameFile, { force: true });
+    } catch {
+      // 名前は運営に送る 1 行の飾りだけ。鍵は元のまま
+    }
+    cleanup();
+    throw e;
+  }
 }
 
-export async function main(argv, { env = process.env, home = homedir(), out = console.log, err = console.error, ask } = {}) {
+export async function main(argv, { env = process.env, home = homedir(), out: rawOut = console.log, err: rawErr = console.error, ask } = {}) {
+  // 画面に出す物は全部、鍵を伏せてから出す（名前の欄に鍵を入れ間違えた時も、作った鍵も出さない）
+  const secrets = [env.AI_DIGEST_API_KEY ?? ''];
+  const hide = (t) => secrets.reduce((text, k) => scrub(text, k), String(t));
+  const out = (t) => rawOut(hide(t));
+  const err = (t) => rawErr(hide(t));
   const [cmd, ...rest] = argv;
   const flags = rest.filter((a) => a.startsWith('--'));
   const args = rest.filter((a) => !a.startsWith('--'));
@@ -64,11 +99,12 @@ export async function main(argv, { env = process.env, home = homedir(), out = co
     err(`鍵のファイルを読めない（${e?.code ?? e}）: ${file}`);
     return 1;
   }
+  secrets.push(current);
 
   if (cmd === 'new') {
     const name = args[0] ?? '';
     if (!KEY_NAME_RE.test(name)) {
-      err(`鍵の名前は、英小文字・数字・_- で32字まで（頭は英小文字か数字）。例: tanaka（今: ${name || 'なし'}）`);
+      err('鍵の名前は、英小文字・数字・_- で32字まで（頭は英小文字か数字）。例: tanaka（鍵を入れ間違えた時のために、入れた物は表示しない）');
       usage();
       return 2;
     }
@@ -82,11 +118,11 @@ export async function main(argv, { env = process.env, home = homedir(), out = co
       return 3;
     }
     const key = newKey();
+    secrets.push(key);
     try {
-      writeSecret(file, key);
-      writeSecret(nameFile, `${name}\n`);
+      commitKey(file, nameFile, key, name, currentName);
     } catch (e) {
-      err(`鍵を書けなかった（${e?.code ?? e?.message ?? e}）: ${file}。${SANDBOX}`);
+      err(`鍵を書けなかった（${e?.code ?? e?.message ?? e}）: ${file}。${current ? '鍵は元のまま（作り直していない）' : '鍵は作っていない'}。${SANDBOX}`);
       return 1;
     }
     if (current) {

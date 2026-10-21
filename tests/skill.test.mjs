@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync as renameSyncReal, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkArticle, checkTitle, scalar, sourcesText } from '../skills/ai-digest-post/scripts/check.mjs';
@@ -952,7 +952,7 @@ test('入れる道具: --author-name で聞かずに決める。だめな名前�
 // ---- 投稿用の鍵（この PC で作り、運営には鍵のハッシュ値の 1 行だけを送る） ----
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { main as keyMain } from '../skills/ai-digest-post/scripts/key.mjs';
+import { commitKey, main as keyMain } from '../skills/ai-digest-post/scripts/key.mjs';
 
 const sha = (k) => createHash('sha256').update(k, 'utf8').digest('hex');
 /** key.mjs を、作った手元で動かす（出力を集める）。ask は「消しますか？」への答え */
@@ -1132,5 +1132,67 @@ test('入れる道具: 次にすることは、登録済みの物を出さない
     assert.match(done.out, /なし（投稿用の鍵とサイトの URL は登録済み）/);
   } finally {
     t.cleanup();
+  }
+});
+
+test('鍵の道具: 名前の欄に鍵を入れ間違えても、鍵を表示しない（aid_ の付いた鍵も、後ろだけも）', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'aid-key-'));
+  try {
+    for (const wrong of [KEY, KEY.slice(4), `aid_${'0'.repeat(48)}`]) {
+      const r = await keyRun(['new', wrong], home);
+      assert.equal(r.code, 2);
+      assert.ok(!r.out.includes(wrong.replace(/^aid_/, '')), `出た: ${r.out}`);
+      assert.match(r.out, /入れた物は表示しない/);
+    }
+    await keyRun(['new', 'tanaka'], home);
+    const key = keyOf(home);
+    const r = await keyRun(['new', key, '--replace'], home); // 登録した鍵そのものを名前に入れた
+    assert.equal(r.code, 2);
+    assert.ok(!r.out.includes(key.slice(4)));
+    assert.equal(keyOf(home), key);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('鍵の道具: 作り直しの途中で書けなかった時は、元の鍵を残し、名前も元に戻す。一時のファイルを残さない', () => {
+  const home = mkdtempSync(join(tmpdir(), 'aid-key-'));
+  const dir = join(home, '.config/ai-digest');
+  const file = join(dir, 'key');
+  const nameFile = join(dir, 'key-name');
+  const real = { mkdirSync, writeFileSync, renameSync: (a, b) => renameSyncReal(a, b), rmSync };
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, KEY);
+    writeFileSync(nameFile, 'tanaka\n');
+    const failOn = (target) => ({ ...real, renameSync: (a, b) => { if (b === target) throw Object.assign(new Error('書けない'), { code: 'EIO' }); renameSyncReal(a, b); } });
+    assert.throws(() => commitKey(file, nameFile, `aid_${'b'.repeat(48)}`, 'hanako', 'tanaka', failOn(file)), /書けない/); // 鍵の置き換えで失敗
+    assert.equal(readFileSync(file, 'utf-8'), KEY);
+    assert.equal(readFileSync(nameFile, 'utf-8'), 'tanaka\n');
+    assert.throws(() => commitKey(file, nameFile, `aid_${'b'.repeat(48)}`, 'hanako', 'tanaka', failOn(nameFile)), /書けない/); // 名前の置き換えで失敗
+    assert.equal(readFileSync(file, 'utf-8'), KEY);
+    assert.equal(readFileSync(nameFile, 'utf-8'), 'tanaka\n');
+    assert.deepEqual(readdirSync(dir).filter((n) => n.endsWith('.tmp')), []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('鍵の道具: 置き場に書けない時は 1 で止め、元の鍵のまま（root では書けてしまうので見ない）', { skip: process.getuid?.() === 0 ? 'root' : false }, async () => {
+  const home = mkdtempSync(join(tmpdir(), 'aid-key-'));
+  const dir = join(home, '.config/ai-digest');
+  try {
+    await keyRun(['new', 'tanaka'], home);
+    const key = keyOf(home);
+    chmodSync(dir, 0o500);
+    const r = await keyRun(['new', 'hanako', '--replace'], home);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /鍵は元のまま（作り直していない）/);
+    chmodSync(dir, 0o700);
+    assert.equal(keyOf(home), key);
+    assert.equal(readFileSync(join(dir, 'key-name'), 'utf-8'), 'tanaka\n');
+  } finally {
+    chmodSync(dir, 0o700);
+    rmSync(home, { recursive: true, force: true });
   }
 });
