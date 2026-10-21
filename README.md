@@ -131,6 +131,7 @@ node skills/ai-digest-post/scripts/find-history.mjs --query "EmbeddingGemma 文�
 node skills/ai-digest-post/scripts/check.mjs 2026-10-20_my-article.md        # 送る前の確かめ
 node skills/ai-digest-post/scripts/post.mjs 2026-10-20_my-article.md --image 2026-10-20_my-article.jpg   # 下書きで送る
 node skills/ai-digest-post/scripts/post.mjs 2026-10-20_my-article.md --publish                             # 送ってすぐ公開（publisher・admin）
+node skills/ai-digest-post/scripts/post.mjs --publish-only my-article                                       # もう送ってある記事を、保存場所の版のまま公開する（送り直さない。運営が下書きを承認する時も）
 ```
 
 - 同じ `slug` で送り直すと書き換えになります（前の版は控えが残ります）

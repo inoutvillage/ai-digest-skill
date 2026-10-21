@@ -113,7 +113,7 @@ test('鍵と URL の探し方: 引数 → 環境変数 → ~/.config/ai-digest �
 });
 
 // 偽のサイト（鍵を照合し、届いた物を覚える）
-async function fakeSite({ name = 'tanaka', role = 'writer' } = {}) {
+async function fakeSite({ name = 'tanaka', role = 'writer', publish = 403 } = {}) {
   const got = [];
   const server = createServer((req, res) => {
     let body = '';
@@ -124,7 +124,10 @@ async function fakeSite({ name = 'tanaka', role = 'writer' } = {}) {
       if (req.headers.authorization !== `Bearer ${KEY}`) return res.writeHead(401).end(JSON.stringify({ ok: false, errors: ['鍵が違う'] }));
       if (req.method === 'GET' && req.url === '/api/articles') return res.end(JSON.stringify({ ok: true, me: { name, role }, articles: [{}, {}] }));
       if (req.method === 'POST' && req.url === '/api/articles') return res.writeHead(201).end(JSON.stringify({ ok: true, slug: 'sample-article', status: 'draft' }));
-      if (req.method === 'POST' && req.url === '/api/articles/publish') return res.writeHead(403).end(JSON.stringify({ ok: false, errors: ['公開できない'] }));
+      if (req.method === 'POST' && req.url === '/api/articles/publish') {
+        if (publish === 200) return res.end(JSON.stringify({ ok: true, slug: JSON.parse(body).slug, status: 'published', deploy: 'triggered' }));
+        return res.writeHead(publish).end(JSON.stringify({ ok: false, errors: ['公開できない'] }));
+      }
       res.writeHead(404).end('{}');
     });
   });
@@ -1247,5 +1250,36 @@ test('送る道具: --check は、短い名前（a）でも、サイトの返事
       await site.close();
       rmSync(home, { recursive: true, force: true });
     }
+  }
+});
+
+test('送る道具: --publish-only は保存場所にある版をそのまま公開する（送り直さない）。だめな slug・ほかの指定と一緒は 2。403・404 は理由を出して 1', async () => {
+  const post = join(SKILL, 'scripts/post.mjs');
+  const ok = await fakeSite({ publish: 200 });
+  const deny = await fakeSite();
+  const missing = await fakeSite({ publish: 404 });
+  const home = homeWith({ url: ok.url, key: KEY, name: 'たなか' });
+  try {
+    const r = await run(post, ['--publish-only', 'sample-article'], home);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /公開: HTTP 200/);
+    const posts = ok.got.filter((g) => g.method === 'POST');
+    assert.deepEqual(posts.map((g) => g.url), ['/api/articles/publish']); // 記事を送り直していない
+    assert.deepEqual(JSON.parse(posts[0].body), { slug: 'sample-article', kind: 'articles' });
+    for (const args of [['--publish-only'], ['--publish-only', 'Bad_Slug'], ['--publish-only', 'a', '--publish'], ['--publish-only', 'a', 'x.md'], ['--publish-only', 'a', '--check'], ['--publish-only', 'a', '--set-name', 'x']]) {
+      assert.equal((await run(post, args, home)).code, 2, JSON.stringify(args));
+    }
+    writeFileSync(join(home, '.config/ai-digest/url'), deny.url);
+    const r403 = await run(post, ['--publish-only', 'sample-article'], home);
+    assert.equal(r403.code, 1);
+    assert.match(r403.out, /公開できるのは publisher（自分の記事）と admin の鍵だけ/);
+    writeFileSync(join(home, '.config/ai-digest/url'), missing.url);
+    const r404 = await run(post, ['--publish-only', 'no-such'], home);
+    assert.equal(r404.code, 1);
+    assert.match(r404.out, /その slug の記事は保存場所に無い/);
+    assert.doesNotMatch(r.out + r403.out + r404.out, new RegExp(KEY.slice(4)));
+  } finally {
+    for (const s of [ok, deny, missing]) await s.close();
+    rmSync(home, { recursive: true, force: true });
   }
 });
