@@ -81,6 +81,10 @@ node skills/ai-digest-post/scripts/post.mjs 2026-10-20_my-article.md --publish  
 - `POST /api/articles/publish` … `{ "slug": "..." }`。admin か、本人が publisher の時だけ
 - `GET /api/health` … 生きているか
 
+## このリポジトリを直す人へ
+
+テストは `node --test`（Node.js 22 以上と bash があれば動きます）。直したら、テストを通してから送ってください。
+
 ## 鍵が漏れた・投稿をやめる時
 
 運営に連絡してください。運営がその鍵を止め、必要なら新しい鍵を作ります。手元の鍵は `skills/ai-digest-post/references/setup.md` の「5. 鍵を消す・替える」の手順で消します。
