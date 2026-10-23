@@ -132,6 +132,7 @@ node skills/ai-digest-post/scripts/check.mjs 2026-10-20_my-article.md        # �
 node skills/ai-digest-post/scripts/post.mjs 2026-10-20_my-article.md --image 2026-10-20_my-article.jpg   # 下書きで送る
 node skills/ai-digest-post/scripts/post.mjs 2026-10-20_my-article.md --publish                             # 送ってすぐ公開（publisher・admin）
 node skills/ai-digest-post/scripts/post.mjs --publish-only my-article                                       # もう送ってある記事を、保存場所の版のまま公開する（送り直さない。運営が下書きを承認する時も）
+node skills/ai-digest-post/scripts/post.mjs --unpublish my-article                                          # 公開した記事を非公開（下書き）に戻す（公開日は空になる）
 ```
 
 - 同じ `slug` で送り直すと書き換えになります（前の版は控えが残ります）
@@ -142,6 +143,7 @@ node skills/ai-digest-post/scripts/post.mjs --publish-only my-article           
 - `GET /api/articles` … 自分の記事の一覧と、自分の名前と役（admin は全部）。`Authorization: Bearer <鍵>`
 - `POST /api/articles` … `{ "markdown": "...", "images": [{ "name": "x.jpg", "base64": "..." }] }`（10 枚まで）。writer は `status: draft` だけ
 - `POST /api/articles/publish` … `{ "slug": "..." }`。admin か、本人が publisher の時だけ
+- `POST /api/articles/unpublish` … `{ "slug": "..." }`。公開した記事を下書きに戻し、公開日を空にする（公開されていたなら本番を作り直す）。admin か、本人が publisher の時だけ
 - `GET /api/health` … 生きているか
 
 ## このリポジトリを直す人へ

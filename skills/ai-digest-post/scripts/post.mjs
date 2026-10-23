@@ -4,6 +4,7 @@
 //   node post.mjs --set-name "<投稿者名>"                   … 記事の下に「投稿者：<名前>」と表示される名前を登録する（~/.config/ai-digest/name）
 //   node post.mjs <記事.md> [--image <絵>]... [--publish]   … 送る（--publish は送った後に公開。publisher / admin だけ）
 //   node post.mjs --publish-only <slug>                     … もう送ってある記事を、保存場所にある版のまま公開する（送り直さない。運営が下書きを承認する時も）
+//   node post.mjs --unpublish <slug>                        … 公開した記事を非公開（下書き）に戻す。公開日は空になり、公開し直すとその日が入る
 // URL と鍵は、先に見つかった物を使う: 環境変数 AI_DIGEST_API_URL / AI_DIGEST_API_KEY → ~/.config/ai-digest/url・key
 // （登録のしかたは ../references/setup.md）。鍵は画面に出さない。--url / --key の引数も使えるが、鍵は履歴に残るので勧めない。
 // 終わりの番号: 0 済んだ／1 鍵が違う・つながらない・送れなかった／2 使い方の誤り・登録が無い／5 鍵は有効だが投稿者名が未登録（--check）
@@ -66,15 +67,16 @@ export function resolveConfig({ args = {}, env = process.env, home = homedir() }
 }
 
 export function parseArgs(argv) {
-  const opt = { file: '', images: [], publish: false, publishOnly: undefined, check: false, setName: undefined, kind: 'articles', url: '', key: '', errors: [] };
+  const opt = { file: '', images: [], publish: false, publishOnly: undefined, unpublish: undefined, check: false, setName: undefined, kind: 'articles', url: '', key: '', errors: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--image') opt.images.push(argv[++i] ?? '');
     else if (a === '--publish') opt.publish = true;
-    else if (a === '--publish-only') {
-      opt.publishOnly = argv[++i];
-      if (opt.publishOnly === undefined) opt.errors.push('--publish-only の後に記事の slug を書く');
-      else if (!SLUG_RE.test(opt.publishOnly)) opt.errors.push('slug は英小文字・数字・ハイフンだけ（記事のファイル名「YYYY-MM-DD_slug.md」の slug の部分）');
+    else if (a === '--publish-only' || a === '--unpublish') {
+      const key = a === '--publish-only' ? 'publishOnly' : 'unpublish';
+      opt[key] = argv[++i];
+      if (opt[key] === undefined) opt.errors.push(`${a} の後に記事の slug を書く`);
+      else if (!SLUG_RE.test(opt[key])) opt.errors.push('slug は英小文字・数字・ハイフンだけ（記事のファイル名「YYYY-MM-DD_slug.md」の slug の部分）');
     }
     else if (a === '--check') opt.check = true;
     else if (a === '--set-name') {
@@ -90,10 +92,11 @@ export function parseArgs(argv) {
   if (!KINDS.includes(opt.kind)) opt.errors.push(`--kind は ${KINDS.join(' か ')}`);
   if (opt.setName !== undefined && (opt.file || opt.check || opt.publish || opt.images.length || opt.publishOnly !== undefined)) opt.errors.push('--set-name はほかの指定と一緒に使わない');
   if (opt.publishOnly !== undefined && (opt.file || opt.check || opt.publish || opt.images.length)) opt.errors.push('--publish-only は記事のファイル・--publish・--image・--check と一緒に使わない（送り直さずに公開だけをする）');
+  if (opt.unpublish !== undefined && (opt.file || opt.check || opt.publish || opt.images.length || opt.publishOnly !== undefined || opt.setName !== undefined)) opt.errors.push('--unpublish はほかの指定と一緒に使わない');
   return opt;
 }
 
-const USAGE = '使い方: node post.mjs --check ／ node post.mjs --set-name "<投稿者名>" ／ node post.mjs <記事.md> [--image <絵>]... [--publish] ／ node post.mjs --publish-only <slug>';
+const USAGE = '使い方: node post.mjs --check ／ node post.mjs --set-name "<投稿者名>" ／ node post.mjs <記事.md> [--image <絵>]... [--publish] ／ node post.mjs --publish-only <slug> ／ node post.mjs --unpublish <slug>';
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ROLE_CAN = { writer: '下書きまで送れる。公開は運営が確かめてから', publisher: '自分の記事は確かめなしで公開できる', admin: '誰の記事でも公開・書き換えできる' };
 
@@ -190,6 +193,7 @@ async function run(argv) {
     return code === 0 && !author.name ? 5 : code; // 鍵は有効でも、投稿者名が無ければ記事を書き終えられない
   }
   if (opt.publishOnly !== undefined) return publishSlug(cfg, headers, opt.publishOnly, opt.kind, false);
+  if (opt.unpublish !== undefined) return unpublishSlug(cfg, headers, opt.unpublish, opt.kind);
   if (!opt.file) {
     err(USAGE);
     return 2;
@@ -227,6 +231,27 @@ async function publishSlug(cfg, headers, slug, kind, sent) {
   if (r.status === 401) err(`鍵が違うか、失効している（${cfg.keyFrom}）。${UNREGISTERED}`);
   if (r.status === 403) err('公開できるのは publisher（自分の記事）と admin の鍵だけ。writer の鍵なら下書きのまま運営の確かめを待つ');
   if (r.status === 404) err('その slug の記事は保存場所に無い。slug（記事のファイル名の日付の後ろ）を確かめる');
+  if (r.ok && j.deploy === 'failed') err('公開にしたが、本番の作り直しを起こせなかった。運営に作り直しを頼む（それまで本番には出ない）');
+  return r.ok ? 0 : 1;
+}
+
+/** 公開した記事を非公開（下書き）に戻す（サイトが状態を下書きに、公開日を空にし、公開されていたなら本番を作り直して消す） */
+async function unpublishSlug(cfg, headers, slug, kind) {
+  let r;
+  try {
+    r = await request(`${cfg.url}/api/articles/unpublish`, { method: 'POST', headers, body: JSON.stringify({ slug, kind }) });
+  } catch (e) {
+    err(`非公開にできなかった: ${e.message}`);
+    return 1;
+  }
+  const j = await r.json().catch(() => ({}));
+  out(`非公開: HTTP ${r.status}`, JSON.stringify(j));
+  if (r.status === 401) err(`鍵が違うか、失効している（${cfg.keyFrom}）。${UNREGISTERED}`);
+  if (r.status === 403) err('非公開にできるのは publisher（自分の記事）と admin の鍵だけ。writer の鍵なら運営に頼む');
+  if (r.status === 404) err('その slug の記事は保存場所に無い。slug（記事のファイル名の日付の後ろ）を確かめる。サイトが古くて非公開の操作を知らない時も 404 になる');
+  if (r.ok && j.unchanged) out('もう下書き（非公開）だった。何も変えていない');
+  else if (r.ok) out('下書き（非公開）に戻した。公開日は空にしたので、直して公開し直すと、その日が公開日になる');
+  if (r.ok && j.deploy === 'failed') err('本番の作り直しを起こせなかった。運営に作り直しを頼む（それまで本番には出たまま）');
   return r.ok ? 0 : 1;
 }
 

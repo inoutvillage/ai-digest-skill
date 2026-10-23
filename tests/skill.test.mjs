@@ -113,7 +113,7 @@ test('鍵と URL の探し方: 引数 → 環境変数 → ~/.config/ai-digest �
 });
 
 // 偽のサイト（鍵を照合し、届いた物を覚える）
-async function fakeSite({ name = 'tanaka', role = 'writer', publish = 403 } = {}) {
+async function fakeSite({ name = 'tanaka', role = 'writer', publish = 403, unpublish = 404, unpublishBody = {} } = {}) {
   const got = [];
   const server = createServer((req, res) => {
     let body = '';
@@ -124,6 +124,10 @@ async function fakeSite({ name = 'tanaka', role = 'writer', publish = 403 } = {}
       if (req.headers.authorization !== `Bearer ${KEY}`) return res.writeHead(401).end(JSON.stringify({ ok: false, errors: ['鍵が違う'] }));
       if (req.method === 'GET' && req.url === '/api/articles') return res.end(JSON.stringify({ ok: true, me: { name, role }, articles: [{}, {}] }));
       if (req.method === 'POST' && req.url === '/api/articles') return res.writeHead(201).end(JSON.stringify({ ok: true, slug: 'sample-article', status: 'draft' }));
+      if (req.method === 'POST' && req.url === '/api/articles/unpublish') {
+        if (unpublish === 200) return res.end(JSON.stringify({ ok: true, slug: JSON.parse(body).slug, status: 'draft', deploy: 'triggered', ...unpublishBody }));
+        return res.writeHead(unpublish).end(JSON.stringify({ ok: false, errors: ['非公開にできない'] }));
+      }
       if (req.method === 'POST' && req.url === '/api/articles/publish') {
         if (publish === 200) return res.end(JSON.stringify({ ok: true, slug: JSON.parse(body).slug, status: 'published', deploy: 'triggered' }));
         return res.writeHead(publish).end(JSON.stringify({ ok: false, errors: ['公開できない'] }));
@@ -1280,6 +1284,45 @@ test('送る道具: --publish-only は保存場所にある版をそのまま公
     assert.doesNotMatch(r.out + r403.out + r404.out, new RegExp(KEY.slice(4)));
   } finally {
     for (const s of [ok, deny, missing]) await s.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('送る道具: --unpublish は公開した記事を非公開に戻す（送り直さない）。もう下書きなら、そう出す。403・404・本番を作り直せない時は理由を出す', async () => {
+  const post = join(SKILL, 'scripts/post.mjs');
+  const ok = await fakeSite({ unpublish: 200 });
+  const same = await fakeSite({ unpublish: 200, unpublishBody: { unchanged: true, deploy: 'none' } });
+  const noDeploy = await fakeSite({ unpublish: 200, unpublishBody: { deploy: 'failed' } });
+  const deny = await fakeSite({ unpublish: 403 });
+  const old = await fakeSite(); // 非公開の操作を知らない古いサイト（404）
+  const home = homeWith({ url: ok.url, key: KEY, name: 'たなか' });
+  const at = (s) => writeFileSync(join(home, '.config/ai-digest/url'), s.url);
+  try {
+    const r = await run(post, ['--unpublish', 'sample-article'], home);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /下書き（非公開）に戻した。公開日は空にした/);
+    const posts = ok.got.filter((g) => g.method === 'POST');
+    assert.deepEqual(posts.map((g) => g.url), ['/api/articles/unpublish']);
+    assert.deepEqual(JSON.parse(posts[0].body), { slug: 'sample-article', kind: 'articles' });
+    at(same);
+    assert.match((await run(post, ['--unpublish', 'sample-article'], home)).out, /もう下書き（非公開）だった/);
+    at(noDeploy);
+    const nd = await run(post, ['--unpublish', 'sample-article'], home);
+    assert.equal(nd.code, 0);
+    assert.match(nd.out, /本番の作り直しを起こせなかった。運営に作り直しを頼む/);
+    at(deny);
+    const r403 = await run(post, ['--unpublish', 'sample-article'], home);
+    assert.equal(r403.code, 1);
+    assert.match(r403.out, /非公開にできるのは publisher（自分の記事）と admin の鍵だけ/);
+    at(old);
+    const r404 = await run(post, ['--unpublish', 'sample-article'], home);
+    assert.equal(r404.code, 1);
+    assert.match(r404.out, /その slug の記事は保存場所に無い/);
+    for (const args of [['--unpublish'], ['--unpublish', 'Bad_Slug'], ['--unpublish', 'a', '--publish-only', 'a'], ['--unpublish', 'a', 'x.md'], ['--unpublish', 'a', '--check']]) {
+      assert.equal((await run(post, args, home)).code, 2, JSON.stringify(args));
+    }
+  } finally {
+    for (const s of [ok, same, noDeploy, deny, old]) await s.close();
     rmSync(home, { recursive: true, force: true });
   }
 });
