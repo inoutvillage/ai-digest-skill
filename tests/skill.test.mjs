@@ -374,7 +374,7 @@ test('同梱の雛形を埋めた記事は、送る前の確かめを通る（�
     [/^title: ".*?"/m, 'title: "1時間の英語の音声を約13秒で文字にする無料のMacアプリ。速さは既存並み"'],
     [/^slug: ""/m, 'slug: "sample-article"'],
     [/^summary: ""/m, 'summary: "要点の 1 文。"'],
-    [/^requested_at: YYYY-MM-DD/m, 'requested_at: 2026-10-20'],
+    [/^requested_at: \S+/m, 'requested_at: 2026-10-20T09:12:34+09:00'],
     [/^genre:( +)#/m, 'genre: 音声$1#'],
     [/^  - url: ""/m, '  - url: "https://example.com/a"'],
     [/^    kind: ""/m, '    kind: article'],
@@ -1324,5 +1324,15 @@ test('送る道具: --unpublish は公開した記事を非公開に戻す（送
   } finally {
     for (const s of [ok, same, noDeploy, deny, old]) await s.close();
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('調べた日時: 秒まで（+09:00）でも日付だけでも通り、ファイル名は日付の部分。時差の無い日時は直す', () => {
+  const at = (v) => GOOD.replace('requested_at: 2026-10-20', `requested_at: ${v}`);
+  assert.deepEqual(checkArticle(at('2026-10-20T23:59:01+09:00'), '2026-10-20_sample-article.md').fix, []);
+  assert.deepEqual(checkArticle(at('2026-10-20'), '2026-10-20_sample-article.md').fix, []);
+  assert.match(checkArticle(at('2026-10-20T23:59:01+09:00'), '2026-10-21_sample-article.md').fix.join('\n'), /ファイル名は 2026-10-20_sample-article\.md/);
+  for (const v of ['2026-10-20T23:59:01', '2026-10-20T23:59+09:00', '2026-10-20 23:59:01+09:00']) {
+    assert.match(checkArticle(at(v), '2026-10-20_sample-article.md').fix.join('\n'), /requested_at は調べた日時/, v);
   }
 });

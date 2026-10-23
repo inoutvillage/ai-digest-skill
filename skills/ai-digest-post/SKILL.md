@@ -123,7 +123,7 @@ node "$SKILL/scripts/find-history.mjs" --query "言葉1 言葉2 言葉3"
 
 ## 4. 書く（決まりの全部は `references/writing.md`）
 
-- `assets/template.md` を写して、ファイル名を `YYYY-MM-DD_<slug>.md` にする（日付は調べた日）
+- `assets/template.md` を写して、ファイル名を `YYYY-MM-DD_<slug>.md` にする（日付は調べた日。`requested_at` は調べた日時を秒まで書く。書き方は writing.md の表）
 - 本文は 4 段: `## 何が起きた` → `## あなたに関係あるか` → `## やるなら何を` → `## どのくらい確か`。1,000 字以内
 - 見出しは「最大の要約」。読まなくても何がどれくらいか分かる 1 文で、50 字まで。疑問形・煽り・「〜した話」「〜へ」・「…」は使わない
 - 転載しない。投稿・掲示板・README・原文・会話の言葉を写さず、出典は要約とリンクにする

@@ -73,8 +73,10 @@ export function checkArticle(markdown, filename = '', { author } = {}) {
   for (const p of checkTitle(scalar(fm, 'title'))) fix.push(`見出し: ${p}`);
   const slug = scalar(fm, 'slug') ?? '';
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) fix.push('slug は英小文字・数字・ハイフンだけ（URL になる）');
-  const date = scalar(fm, 'requested_at') ?? '';
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fix.push('requested_at は調べた日（YYYY-MM-DD）');
+  const requested = scalar(fm, 'requested_at') ?? '';
+  // 調べた日時（JST・秒まで）か、時刻が分からない時の日付だけ。ファイル名の日付はその日付の部分
+  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}\+09:00)?$/.test(requested)) fix.push('requested_at は調べた日時（2026-10-24T09:12:34+09:00 の形。時刻が分からなければ YYYY-MM-DD）');
+  const date = requested.slice(0, 10);
   if (filename && slug && date && basename(filename) !== `${date}_${slug}.md`) fix.push(`ファイル名は ${date}_${slug}.md にする（今は ${basename(filename)}）`);
   const summary = scalar(fm, 'summary') ?? '';
   if (!summary) fix.push('summary（1〜2 文）が空');

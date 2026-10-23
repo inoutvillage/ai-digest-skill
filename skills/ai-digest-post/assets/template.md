@@ -2,8 +2,8 @@
 title: "（見出し。読者の言葉で。何が起きたかが分かる 1 行）"
 slug: ""                     # ファイル名「YYYY-MM-DD_slug.md」の slug の部分と同じ。英小文字・数字・ハイフンだけ。URL になる
 summary: ""                  # 1〜2 文。一覧と、LINE などで送った時の説明に使う
-requested_at: YYYY-MM-DD     # 調べた日（並び順の基準）
-published_at:                # 空のまま（公開した時に入る）
+requested_at: YYYY-MM-DDTHH:MM:SS+09:00  # 調べた日時（JST・秒まで。並び順の基準。画面には日付だけ出る。時刻が分からなければ日付だけ）
+published_at:                # 空のまま（公開した時に日時が入る）
 updated_at:                  # 直した日（あれば。無ければ空）
 status: draft                # writer は draft のまま。publisher・admin は published も可
 tags: []                     # 例: [音声認識, ローカルLLM, 画像生成]
